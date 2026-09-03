@@ -49,10 +49,8 @@ void operator delete[](void* ptr) noexcept { ::kernel::kfree(ptr); }
 void operator delete(void* ptr, usize) noexcept { ::kernel::kfree(ptr); }
 void operator delete[](void* ptr, usize) noexcept { ::kernel::kfree(ptr); }
 
-// Placement new, which the kernel uses to construct objects in memory it has
-// already allocated (slabs, per-CPU blocks, page-aligned buffers).
-void* operator new(usize, void* where) noexcept { return where; }
-void* operator new[](usize, void* where) noexcept { return where; }
+// Placement new lives in kernel/lib/new.h, defined inline: the compiler treats
+// those overloads specially and a separate definition here would clash.
 
 // The kernel's global constructors, run once before kernel_main.
 extern "C" {

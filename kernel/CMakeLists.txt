@@ -2,16 +2,24 @@
 
 set(KERNEL_SOURCES
     arch/x86_64/boot.S
+    arch/x86_64/cpu.cpp
+    arch/x86_64/gdt.cpp
+    arch/x86_64/idt.cpp
+    arch/x86_64/isr.S
+    arch/x86_64/pic.cpp
     arch/x86_64/serial.cpp
     boot/boot_info.cpp
     dev/console.cpp
     dev/framebuffer.cpp
     lib/cxx_support.cpp
-    mm/heap.cpp
     lib/format.cpp
     lib/string.cpp
+    mm/address_space.cpp
+    mm/heap.cpp
+    mm/physical.cpp
     main.cpp
     panic.cpp
+    selftest.cpp
 )
 
 set(KERNEL_LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/arch/${SHITOS_ARCH}/linker.ld")

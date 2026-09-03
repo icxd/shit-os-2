@@ -5,12 +5,20 @@
 // boot.S hands us the multiboot2 magic and info pointer and nothing else; by
 // the time this returns, the machine is a running operating system.
 
+#include <kernel/arch/x86_64/cpu.h>
+#include <kernel/arch/x86_64/gdt.h>
+#include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/arch/x86_64/io.h>
 #include <kernel/arch/x86_64/serial.h>
 #include <kernel/boot/boot_info.h>
 #include <kernel/dev/console.h>
 #include <kernel/dev/framebuffer.h>
+#include <kernel/lib/spinlock.h>
+#include <kernel/mm/address_space.h>
+#include <kernel/mm/heap.h>
+#include <kernel/mm/physical.h>
 #include <kernel/panic.h>
+#include <kernel/selftest.h>
 
 namespace kernel {
 
@@ -124,7 +132,24 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
     print_banner();
     print_boot_summary(info);
 
-    klog(LOG_INFO, "boot", "stage A complete: long mode, console, memory map");
+    arch::cpu_initialize();
+
+    // Descriptor tables before memory: a fault during the memory bring-up is
+    // exactly when a working IDT is worth the most.
+    arch::gdt_initialize();
+    arch::idt_initialize();
+
+    mm::physical_initialize(info);
+    mm::virtual_memory_initialize(info);
+    heap_initialize();
+
+    // Safe to take interrupts now: the IDT is real and every PIC line is
+    // still masked, so nothing can fire until a driver asks for it.
+    interrupts_enable();
+
+    run_boot_selftests();
+
+    klog(LOG_INFO, "boot", "stage B complete: descriptors, interrupts, memory");
 
     arch::halt_forever();
 }

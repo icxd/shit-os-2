@@ -38,8 +38,12 @@ if [ -z "$ISO" ]; then
 fi
 [ -n "$ISO" ] && [ -f "$ISO" ] || { echo "no ISO found; run: ninja -C build iso" >&2; exit 1; }
 
+# -cpu max exposes SMEP, SMAP and 1 GiB pages, which the default qemu64 model
+# does not. The kernel copes either way, but there is no reason to test the
+# weaker configuration by default.
 set -- \
     -cdrom "$ISO" \
+    -cpu "${SHITOS_QEMU_CPU:-max}" \
     -m "$MEMORY" \
     -smp "$CPUS" \
     -machine q35 \

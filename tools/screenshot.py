@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     qemu = subprocess.Popen([
         "qemu-system-x86_64", "-cdrom", iso, "-m", "256M", "-smp", "1",
-        "-machine", "q35", "-no-reboot", "-display", "none",
+        "-machine", "q35", "-cpu", "max", "-no-reboot", "-display", "none",
         "-serial", "file:" + serial,
         "-monitor", "unix:%s,server,nowait" % monitor,
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
