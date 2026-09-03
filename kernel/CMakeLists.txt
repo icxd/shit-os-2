@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set(KERNEL_SOURCES
+    arch/x86_64/boot.S
+    arch/x86_64/serial.cpp
+    boot/boot_info.cpp
+    dev/console.cpp
+    dev/framebuffer.cpp
+    lib/cxx_support.cpp
+    mm/heap.cpp
+    lib/format.cpp
+    lib/string.cpp
+    main.cpp
+    panic.cpp
+)
+
+set(KERNEL_LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/arch/${SHITOS_ARCH}/linker.ld")
+
+add_executable(kernel.elf ${KERNEL_SOURCES})
+target_link_libraries(kernel.elf PRIVATE shitos_kernel_flags)
+target_include_directories(kernel.elf PRIVATE "${CMAKE_SOURCE_DIR}")
+
+target_compile_options(kernel.elf PRIVATE
+    # The kernel lives in the top 2 GiB, which is exactly what this model
+    # assumes; it lets the compiler use 32-bit sign-extended addressing.
+    $<$<COMPILE_LANGUAGE:C,CXX>:-mcmodel=kernel>
+    # Keep frame pointers so panic() can produce a backtrace.
+    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-omit-frame-pointer>
+)
+
+target_link_options(kernel.elf PRIVATE
+    "-Wl,-T,${KERNEL_LINKER_SCRIPT}"
+    -nostdlib
+    -static
+    -Wl,--build-id=none
+    -Wl,-z,max-page-size=0x1000
+    -Wl,-z,noexecstack
+)
+set_target_properties(kernel.elf PROPERTIES LINK_DEPENDS "${KERNEL_LINKER_SCRIPT}")

@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""shit os 2 -- drive QEMU's monitor to capture the framebuffer.
+
+Boots the ISO headless, optionally types some keys, then asks QEMU for a
+screendump. The PPM it produces is converted to PNG only if a converter is
+available; otherwise the PPM is left in place, which every image viewer and
+most browsers can read anyway.
+"""
+
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+iso, output, delay, keys = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
+
+with tempfile.TemporaryDirectory() as tmp:
+    monitor = os.path.join(tmp, "monitor.sock")
+    ppm = os.path.join(tmp, "shot.ppm")
+    serial = os.path.join(tmp, "serial.log")
+
+    qemu = subprocess.Popen([
+        "qemu-system-x86_64", "-cdrom", iso, "-m", "256M", "-smp", "1",
+        "-machine", "q35", "-no-reboot", "-display", "none",
+        "-serial", "file:" + serial,
+        "-monitor", "unix:%s,server,nowait" % monitor,
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    try:
+        # Wait for the monitor socket to exist before connecting.
+        deadline = time.time() + 10
+        while not os.path.exists(monitor) and time.time() < deadline:
+            time.sleep(0.1)
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(monitor)
+        time.sleep(delay)
+
+        def command(text):
+            sock.sendall((text + "\n").encode())
+            time.sleep(0.35)
+
+        for key in keys.split():
+            command("sendkey " + key)
+        if keys:
+            time.sleep(1.5)
+
+        command("screendump " + ppm)
+        time.sleep(1.5)
+
+        if not os.path.exists(ppm):
+            print("screendump produced nothing", file=sys.stderr)
+            sys.exit(1)
+
+        if output.endswith(".png"):
+            for converter in (["magick", ppm, output], ["convert", ppm, output],
+                              ["pnmtopng", ppm]):
+                try:
+                    if converter[0] == "pnmtopng":
+                        with open(output, "wb") as handle:
+                            subprocess.run(converter, stdout=handle, check=True)
+                    else:
+                        subprocess.run(converter, check=True,
+                                       stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+                    break
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    continue
+            else:
+                output = output[:-4] + ".ppm"
+                subprocess.run(["cp", ppm, output], check=True)
+        else:
+            subprocess.run(["cp", ppm, output], check=True)
+
+        print("wrote %s" % output)
+        if os.path.exists(serial):
+            sys.stderr.write(open(serial, errors="replace").read())
+    finally:
+        qemu.kill()
+        qemu.wait()
