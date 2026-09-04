@@ -29,9 +29,7 @@ int main(int argc, char** argv, char** envp)
             case 'r': release = 1; break;
             case 'v': version = 1; break;
             case 'm': machine = 1; break;
-            default:
-                fprintf(stderr, "uname: unknown option -%c\n", *flag);
-                return 2;
+            default: fprintf(stderr, "uname: unknown option -%c\n", *flag); return 2;
             }
         }
     }
@@ -47,11 +45,16 @@ int main(int argc, char** argv, char** envp)
         sysname = 1;
 
     int printed = 0;
-    if (sysname) printf("%s%s", printed++ ? " " : "", name.sysname);
-    if (nodename) printf("%s%s", printed++ ? " " : "", name.nodename);
-    if (release) printf("%s%s", printed++ ? " " : "", name.release);
-    if (version) printf("%s%s", printed++ ? " " : "", name.version);
-    if (machine) printf("%s%s", printed++ ? " " : "", name.machine);
+    if (sysname)
+        printf("%s%s", printed++ ? " " : "", name.sysname);
+    if (nodename)
+        printf("%s%s", printed++ ? " " : "", name.nodename);
+    if (release)
+        printf("%s%s", printed++ ? " " : "", name.release);
+    if (version)
+        printf("%s%s", printed++ ? " " : "", name.version);
+    if (machine)
+        printf("%s%s", printed++ ? " " : "", name.machine);
     printf("\n");
 
     return 0;

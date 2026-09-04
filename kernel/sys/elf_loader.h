@@ -12,6 +12,7 @@
 #include <kernel/fs/vfs.h>
 #include <kernel/lib/error.h>
 #include <kernel/mm/address_space.h>
+
 #include <shitos/types.h>
 
 namespace kernel::sys {
@@ -34,7 +35,9 @@ ErrorOr<u64> setup_user_stack(mm::AddressSpace& space, LoadedExecutable const& e
 
 // Copies into an address space that is not currently active, by translating
 // each page and going through the direct map.
-ErrorOr<void> copy_into_space(mm::AddressSpace& space, u64 destination, void const* source, usize length);
-ErrorOr<void> copy_out_of_space(mm::AddressSpace& space, void* destination, u64 source, usize length);
+ErrorOr<void> copy_into_space(
+    mm::AddressSpace& space, u64 destination, void const* source, usize length);
+ErrorOr<void> copy_out_of_space(
+    mm::AddressSpace& space, void* destination, u64 source, usize length);
 
 } // namespace kernel::sys

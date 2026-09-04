@@ -16,8 +16,14 @@ DevfsFileSystem* s_instance = nullptr;
 // /dev/null and /dev/zero are not worth a loadable module, so devfs provides
 // them itself through the same DeviceOps interface a driver would use.
 
-isize null_read(void*, void*, usize, u64) { return 0; }
-isize null_write(void*, void const*, usize length, u64) { return static_cast<isize>(length); }
+isize null_read(void*, void*, usize, u64)
+{
+    return 0;
+}
+isize null_write(void*, void const*, usize length, u64)
+{
+    return static_cast<isize>(length);
+}
 
 isize zero_read(void*, void* buffer, usize length, u64)
 {
@@ -116,7 +122,10 @@ ErrorOr<bool> DevfsInode::read_directory(usize index, DirectoryEntry& out)
     return true;
 }
 
-DevfsFileSystem* DevfsFileSystem::the() { return s_instance; }
+DevfsFileSystem* DevfsFileSystem::the()
+{
+    return s_instance;
+}
 
 ErrorOr<DevfsFileSystem*> DevfsFileSystem::create()
 {
@@ -155,8 +164,8 @@ ErrorOr<void> DevfsFileSystem::register_device(DeviceDescriptor const& device)
             return Error::from_errno(EEXIST);
     }
 
-    auto const type = device.type == DEVICE_TYPE_BLOCK ? InodeType::BlockDevice
-                                                       : InodeType::CharacterDevice;
+    auto const type
+        = device.type == DEVICE_TYPE_BLOCK ? InodeType::BlockDevice : InodeType::CharacterDevice;
 
     auto* node = static_cast<DevfsInode*>(kzalloc(sizeof(DevfsInode)));
     if (node == nullptr)
@@ -192,6 +201,9 @@ void DevfsFileSystem::unregister_device(char const* name)
     }
 }
 
-usize DevfsFileSystem::device_count() const { return m_root->m_children.size(); }
+usize DevfsFileSystem::device_count() const
+{
+    return m_root->m_children.size();
+}
 
 } // namespace kernel::fs

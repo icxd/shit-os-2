@@ -3,6 +3,7 @@
 #define _DIRENT_H
 
 #include <shitos/abi/dirent.h>
+
 #include <sys/types.h>
 
 typedef struct _DIR DIR;

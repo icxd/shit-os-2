@@ -62,11 +62,23 @@ void pit_initialize(u32 frequency_hz)
         static_cast<u64>(1000 / frequency_hz));
 }
 
-void pit_set_callback(TimerCallback callback) { s_callback = callback; }
+void pit_set_callback(TimerCallback callback)
+{
+    s_callback = callback;
+}
 
-u64 pit_ticks() { return __atomic_load_n(&s_ticks, __ATOMIC_RELAXED); }
-u32 pit_frequency() { return s_frequency; }
-u64 pit_uptime_ms() { return pit_ticks() * 1000 / s_frequency; }
+u64 pit_ticks()
+{
+    return __atomic_load_n(&s_ticks, __ATOMIC_RELAXED);
+}
+u32 pit_frequency()
+{
+    return s_frequency;
+}
+u64 pit_uptime_ms()
+{
+    return pit_ticks() * 1000 / s_frequency;
+}
 
 void pit_busy_wait_ms(u64 milliseconds)
 {

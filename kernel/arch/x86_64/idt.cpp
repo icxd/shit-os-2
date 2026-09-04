@@ -97,7 +97,8 @@ void set_gate(usize vector, void* handler, u8 ist, bool user_callable)
         .offset_low = static_cast<u16>(address),
         .selector = SELECTOR_KERNEL_CODE,
         .ist = ist,
-        .type_attributes = static_cast<u8>(GATE_PRESENT | GATE_INTERRUPT | (user_callable ? GATE_DPL3 : 0)),
+        .type_attributes
+        = static_cast<u8>(GATE_PRESENT | GATE_INTERRUPT | (user_callable ? GATE_DPL3 : 0)),
         .offset_middle = static_cast<u16>(address >> 16),
         .offset_high = static_cast<u32>(address >> 32),
         .reserved = 0,
@@ -143,9 +144,15 @@ void dump_interrupt_frame(InterruptFrame const* frame)
         reinterpret_cast<void*>(frame->error_code));
 }
 
-void register_trap_handler(u8 vector, TrapHandler handler) { s_trap_handlers[vector] = handler; }
+void register_trap_handler(u8 vector, TrapHandler handler)
+{
+    s_trap_handlers[vector] = handler;
+}
 
-u64 interrupt_count(u8 vector) { return s_counts[vector]; }
+u64 interrupt_count(u8 vector)
+{
+    return s_counts[vector];
+}
 
 ModuleResult register_irq_handler(u8 irq, IrqHandler handler, void* self)
 {
@@ -181,8 +188,14 @@ void unregister_irq_handler(u8 irq, void* self)
         pic_mask(irq);
 }
 
-void irq_mask(u8 irq) { pic_mask(irq); }
-void irq_unmask(u8 irq) { pic_unmask(irq); }
+void irq_mask(u8 irq)
+{
+    pic_mask(irq);
+}
+void irq_unmask(u8 irq)
+{
+    pic_unmask(irq);
+}
 
 void idt_initialize()
 {

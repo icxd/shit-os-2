@@ -14,9 +14,9 @@ namespace kernel::arch {
 
 struct CpuFeatures {
     bool nx;
-    bool pge;      // global pages survive a CR3 reload
-    bool smep;     // ring 0 cannot execute a user-accessible page
-    bool smap;     // ring 0 cannot read or write a user page without STAC
+    bool pge; // global pages survive a CR3 reload
+    bool smep; // ring 0 cannot execute a user-accessible page
+    bool smap; // ring 0 cannot read or write a user page without STAC
     bool gigabyte_pages;
     bool syscall;
     bool tsc;

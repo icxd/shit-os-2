@@ -10,7 +10,13 @@
 
 #include <shitos/types.h>
 
-inline void* operator new(usize, void* where) noexcept { return where; }
-inline void* operator new[](usize, void* where) noexcept { return where; }
+inline void* operator new(usize, void* where) noexcept
+{
+    return where;
+}
+inline void* operator new[](usize, void* where) noexcept
+{
+    return where;
+}
 inline void operator delete(void*, void*) noexcept { }
 inline void operator delete[](void*, void*) noexcept { }

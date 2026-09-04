@@ -18,13 +18,13 @@ struct InterruptFrame;
 
 } // namespace kernel
 
-#define VERIFY(expression)                                                        \
-    do {                                                                          \
-        if (!(expression)) [[unlikely]]                                           \
-            ::kernel::panic("VERIFY(%s) failed at %s:%d", #expression, __FILE__,  \
-                __LINE__);                                                        \
+#define VERIFY(expression)                                                                         \
+    do {                                                                                           \
+        if (!(expression)) [[unlikely]]                                                            \
+            ::kernel::panic("VERIFY(%s) failed at %s:%d", #expression, __FILE__, __LINE__);        \
     } while (0)
 
-#define VERIFY_NOT_REACHED() ::kernel::panic("reached unreachable code at %s:%d", __FILE__, __LINE__)
+#define VERIFY_NOT_REACHED()                                                                       \
+    ::kernel::panic("reached unreachable code at %s:%d", __FILE__, __LINE__)
 
 #define TODO() ::kernel::panic("not implemented yet: %s at %s:%d", __func__, __FILE__, __LINE__)

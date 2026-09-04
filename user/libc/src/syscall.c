@@ -13,7 +13,10 @@
 
 static int s_errno;
 
-int* __errno_location(void) { return &s_errno; }
+int* __errno_location(void)
+{
+    return &s_errno;
+}
 
 long __syscall_return(long value)
 {

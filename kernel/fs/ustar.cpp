@@ -247,7 +247,8 @@ ErrorOr<void> UstarFileSystem::parse(u8 const* data, usize length)
             }
             case '0':
             case '\0': {
-                auto* inode = TRY(ensure_path(clean_path, InodeType::Regular, mode != 0 ? mode : 0644));
+                auto* inode
+                    = TRY(ensure_path(clean_path, InodeType::Regular, mode != 0 ? mode : 0644));
                 inode->m_data = data + offset;
                 inode->m_size = size;
                 ++m_file_count;
@@ -257,7 +258,8 @@ ErrorOr<void> UstarFileSystem::parse(u8 const* data, usize length)
             default:
                 // Symlinks, hard links, device nodes and the GNU extensions
                 // are skipped rather than half-supported.
-                klog(LOG_DEBUG, "ustar", "skipping '%s' (type '%c')", clean_path, header->type_flag);
+                klog(
+                    LOG_DEBUG, "ustar", "skipping '%s' (type '%c')", clean_path, header->type_flag);
                 break;
             }
         }

@@ -117,8 +117,14 @@ struct [[gnu::packed]] Elf64_Sym {
     Elf64_Xword st_size;
 };
 
-constexpr u8 symbol_binding(u8 info) { return info >> 4; }
-constexpr u8 symbol_type(u8 info) { return info & 0xF; }
+constexpr u8 symbol_binding(u8 info)
+{
+    return info >> 4;
+}
+constexpr u8 symbol_type(u8 info)
+{
+    return info & 0xF;
+}
 
 inline constexpr u8 STB_LOCAL = 0;
 inline constexpr u8 STB_GLOBAL = 1;
@@ -135,17 +141,23 @@ struct [[gnu::packed]] Elf64_Rela {
     Elf64_Sxword r_addend;
 };
 
-constexpr u32 relocation_type(Elf64_Xword info) { return static_cast<u32>(info & 0xFFFFFFFF); }
-constexpr u32 relocation_symbol(Elf64_Xword info) { return static_cast<u32>(info >> 32); }
+constexpr u32 relocation_type(Elf64_Xword info)
+{
+    return static_cast<u32>(info & 0xFFFFFFFF);
+}
+constexpr u32 relocation_symbol(Elf64_Xword info)
+{
+    return static_cast<u32>(info >> 32);
+}
 
 // x86-64 relocation types the module loader implements.
 inline constexpr u32 R_X86_64_NONE = 0;
-inline constexpr u32 R_X86_64_64 = 1;     // S + A
-inline constexpr u32 R_X86_64_PC32 = 2;   // S + A - P
-inline constexpr u32 R_X86_64_PLT32 = 4;  // L + A - P, same as PC32 when static
-inline constexpr u32 R_X86_64_32 = 10;    // S + A, zero-extended, must fit
-inline constexpr u32 R_X86_64_32S = 11;   // S + A, sign-extended, must fit
-inline constexpr u32 R_X86_64_PC64 = 24;  // S + A - P
+inline constexpr u32 R_X86_64_64 = 1; // S + A
+inline constexpr u32 R_X86_64_PC32 = 2; // S + A - P
+inline constexpr u32 R_X86_64_PLT32 = 4; // L + A - P, same as PC32 when static
+inline constexpr u32 R_X86_64_32 = 10; // S + A, zero-extended, must fit
+inline constexpr u32 R_X86_64_32S = 11; // S + A, sign-extended, must fit
+inline constexpr u32 R_X86_64_PC64 = 24; // S + A - P
 
 // Dynamic-linking relocations, for the userland loader later.
 inline constexpr u32 R_X86_64_RELATIVE = 8;

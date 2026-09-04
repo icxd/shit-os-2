@@ -89,9 +89,15 @@ void Scheduler::initialize()
         cpu->current_thread->name());
 }
 
-bool Scheduler::is_running() { return s_running; }
+bool Scheduler::is_running()
+{
+    return s_running;
+}
 
-Thread* Scheduler::current() { return arch::this_cpu()->current_thread; }
+Thread* Scheduler::current()
+{
+    return arch::this_cpu()->current_thread;
+}
 
 void Scheduler::enqueue(Thread* thread)
 {
@@ -142,7 +148,8 @@ InterruptFrame* Scheduler::switch_to_next(InterruptFrame* frame, bool requeue_cu
     // of them, so that is safe.
     if (auto* process = next->process(); process != nullptr) {
         auto* space = process->address_space();
-        if (space != nullptr && (previous == nullptr || previous->process() == nullptr
+        if (space != nullptr
+            && (previous == nullptr || previous->process() == nullptr
                 || previous->process()->address_space() != space)) {
             space->activate();
         }
@@ -179,13 +186,15 @@ InterruptFrame* Scheduler::on_timer_tick(InterruptFrame* frame)
             --current_thread->m_quantum_remaining;
     }
 
-    bool const quantum_expired = current_thread == nullptr || current_thread->m_quantum_remaining == 0;
+    bool const quantum_expired
+        = current_thread == nullptr || current_thread->m_quantum_remaining == 0;
     bool const someone_waiting = !s_run_queue.is_empty();
 
     // Only pay for a switch when there is both a reason and somewhere to go.
     if (!quantum_expired && !(current_thread == s_idle_thread && someone_waiting))
         return frame;
-    if (!someone_waiting && current_thread != nullptr && current_thread->m_state == ThreadState::Running) {
+    if (!someone_waiting && current_thread != nullptr
+        && current_thread->m_state == ThreadState::Running) {
         current_thread->m_quantum_remaining = DEFAULT_QUANTUM_TICKS;
         return frame;
     }
@@ -266,9 +275,18 @@ void Scheduler::sleep_ms(u64 milliseconds)
     panic("a zombie thread was scheduled again");
 }
 
-u64 Scheduler::ticks() { return arch::pit_ticks(); }
-u64 Scheduler::uptime_ms() { return arch::pit_uptime_ms(); }
-u64 Scheduler::context_switches() { return arch::this_cpu()->context_switches; }
+u64 Scheduler::ticks()
+{
+    return arch::pit_ticks();
+}
+u64 Scheduler::uptime_ms()
+{
+    return arch::pit_uptime_ms();
+}
+u64 Scheduler::context_switches()
+{
+    return arch::this_cpu()->context_switches;
+}
 
 usize Scheduler::thread_count()
 {

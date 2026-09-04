@@ -28,8 +28,8 @@ static void format_mode(unsigned int mode, char* out)
     out[10] = '\0';
 }
 
-static int list_one(const char* path, int long_format, int show_hidden, int print_header,
-    int multiple)
+static int list_one(
+    const char* path, int long_format, int show_hidden, int print_header, int multiple)
 {
     struct stat status;
     if (stat(path, &status) < 0) {

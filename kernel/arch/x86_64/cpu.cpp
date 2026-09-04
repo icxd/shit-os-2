@@ -41,7 +41,10 @@ u64 read_cr0()
     return value;
 }
 
-void write_cr0(u64 value) { asm volatile("movq %0, %%cr0" ::"r"(value) : "memory"); }
+void write_cr0(u64 value)
+{
+    asm volatile("movq %0, %%cr0" ::"r"(value) : "memory");
+}
 
 u64 read_cr4()
 {
@@ -50,7 +53,10 @@ u64 read_cr4()
     return value;
 }
 
-void write_cr4(u64 value) { asm volatile("movq %0, %%cr4" ::"r"(value) : "memory"); }
+void write_cr4(u64 value)
+{
+    asm volatile("movq %0, %%cr4" ::"r"(value) : "memory");
+}
 
 void detect()
 {
@@ -92,7 +98,10 @@ void detect()
 
 } // namespace
 
-CpuFeatures const& cpu_features() { return s_features; }
+CpuFeatures const& cpu_features()
+{
+    return s_features;
+}
 
 void cpu_initialize()
 {
@@ -121,9 +130,9 @@ void cpu_initialize()
 
     klog(LOG_INFO, "cpu", "%s", s_features.brand[0] != '\0' ? s_features.brand : s_features.vendor);
     klog(LOG_INFO, "cpu", "nx=%s pge=%s smep=%s smap=%s 1g-pages=%s syscall=%s",
-        s_features.nx ? "yes" : "no", s_features.pge ? "yes" : "no",
-        s_features.smep ? "on" : "no", s_features.smap ? "available" : "no",
-        s_features.gigabyte_pages ? "yes" : "no", s_features.syscall ? "yes" : "no");
+        s_features.nx ? "yes" : "no", s_features.pge ? "yes" : "no", s_features.smep ? "on" : "no",
+        s_features.smap ? "available" : "no", s_features.gigabyte_pages ? "yes" : "no",
+        s_features.syscall ? "yes" : "no");
 }
 
 } // namespace kernel::arch

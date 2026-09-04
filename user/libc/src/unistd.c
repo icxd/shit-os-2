@@ -42,23 +42,35 @@ int open(const char* path, int flags, ...)
     return (int)__syscall_return(__syscall3(SYS_open, (long)path, flags, (long)mode));
 }
 
-int creat(const char* path, mode_t mode) { return open(path, O_WRONLY | O_CREAT | O_TRUNC, mode); }
+int creat(const char* path, mode_t mode)
+{
+    return open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+}
 
-int close(int fd) { return (int)__syscall_return(__syscall1(SYS_close, fd)); }
+int close(int fd)
+{
+    return (int)__syscall_return(__syscall1(SYS_close, fd));
+}
 
 off_t lseek(int fd, off_t offset, int whence)
 {
     return __syscall_return(__syscall3(SYS_lseek, fd, offset, whence));
 }
 
-pid_t fork(void) { return (pid_t)__syscall_return(__syscall0(SYS_fork)); }
+pid_t fork(void)
+{
+    return (pid_t)__syscall_return(__syscall0(SYS_fork));
+}
 
 int execve(const char* path, char* const argv[], char* const envp[])
 {
     return (int)__syscall_return(__syscall3(SYS_execve, (long)path, (long)argv, (long)envp));
 }
 
-int execv(const char* path, char* const argv[]) { return execve(path, argv, environ); }
+int execv(const char* path, char* const argv[])
+{
+    return execve(path, argv, environ);
+}
 
 int execvp(const char* file, char* const argv[])
 {
@@ -101,14 +113,32 @@ void _exit(int status)
     __builtin_unreachable();
 }
 
-pid_t getpid(void) { return (pid_t)__syscall0(SYS_getpid); }
-pid_t getppid(void) { return (pid_t)__syscall0(SYS_getppid); }
+pid_t getpid(void)
+{
+    return (pid_t)__syscall0(SYS_getpid);
+}
+pid_t getppid(void)
+{
+    return (pid_t)__syscall0(SYS_getppid);
+}
 
-int dup(int fd) { return (int)__syscall_return(__syscall1(SYS_dup, fd)); }
-int dup2(int fd, int to) { return (int)__syscall_return(__syscall2(SYS_dup2, fd, to)); }
-int pipe(int fds[2]) { return (int)__syscall_return(__syscall1(SYS_pipe, (long)fds)); }
+int dup(int fd)
+{
+    return (int)__syscall_return(__syscall1(SYS_dup, fd));
+}
+int dup2(int fd, int to)
+{
+    return (int)__syscall_return(__syscall2(SYS_dup2, fd, to));
+}
+int pipe(int fds[2])
+{
+    return (int)__syscall_return(__syscall1(SYS_pipe, (long)fds));
+}
 
-int chdir(const char* path) { return (int)__syscall_return(__syscall1(SYS_chdir, (long)path)); }
+int chdir(const char* path)
+{
+    return (int)__syscall_return(__syscall1(SYS_chdir, (long)path));
+}
 
 char* getcwd(char* buffer, size_t size)
 {
@@ -116,8 +146,14 @@ char* getcwd(char* buffer, size_t size)
     return result < 0 ? 0 : buffer;
 }
 
-int rmdir(const char* path) { return (int)__syscall_return(__syscall1(SYS_rmdir, (long)path)); }
-int unlink(const char* path) { return (int)__syscall_return(__syscall1(SYS_unlink, (long)path)); }
+int rmdir(const char* path)
+{
+    return (int)__syscall_return(__syscall1(SYS_rmdir, (long)path));
+}
+int unlink(const char* path)
+{
+    return (int)__syscall_return(__syscall1(SYS_unlink, (long)path));
+}
 int mkdir(const char* path, mode_t mode)
 {
     return (int)__syscall_return(__syscall2(SYS_mkdir, (long)path, mode));
@@ -138,7 +174,10 @@ pid_t waitpid(pid_t pid, int* status, int options)
     return (pid_t)__syscall_return(__syscall3(SYS_waitpid, pid, (long)status, options));
 }
 
-pid_t wait(int* status) { return waitpid(-1, status, 0); }
+pid_t wait(int* status)
+{
+    return waitpid(-1, status, 0);
+}
 
 int isatty(int fd)
 {
@@ -155,7 +194,10 @@ int ioctl(int fd, unsigned long request, void* argument)
     return (int)__syscall_return(__syscall3(SYS_ioctl, fd, (long)request, (long)argument));
 }
 
-int tcgetattr(int fd, struct termios* out) { return ioctl(fd, TCGETS, out); }
+int tcgetattr(int fd, struct termios* out)
+{
+    return ioctl(fd, TCGETS, out);
+}
 int tcsetattr(int fd, int actions, const struct termios* in)
 {
     (void)actions;
@@ -229,7 +271,10 @@ int kill(pid_t pid, int signal)
     return (int)__syscall_return(__syscall2(SYS_kill, pid, signal));
 }
 
-int raise(int signal) { return kill(getpid(), signal); }
+int raise(int signal)
+{
+    return kill(getpid(), signal);
+}
 
 extern void __libc_sigreturn_trampoline(void);
 
@@ -250,8 +295,7 @@ int sigaction(int number, const struct sigaction* action, struct sigaction* old)
         to_install = &copy;
     }
 
-    return (int)__syscall_return(
-        __syscall3(SYS_sigaction, number, (long)to_install, (long)old));
+    return (int)__syscall_return(__syscall3(SYS_sigaction, number, (long)to_install, (long)old));
 }
 
 sighandler_t signal(int number, sighandler_t handler)

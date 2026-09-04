@@ -19,19 +19,18 @@ LogLevel s_min_level = LOG_DEBUG;
 // mask interrupts rather than just spin.
 InterruptSpinLock s_console_lock;
 
-void sink_put(void*, char c) { kputchar(c); }
+void sink_put(void*, char c)
+{
+    kputchar(c);
+}
 
 char const* level_tag(LogLevel level)
 {
     switch (level) {
-    case LOG_DEBUG:
-        return "dbg";
-    case LOG_INFO:
-        return "   ";
-    case LOG_WARN:
-        return "WRN";
-    case LOG_ERROR:
-        return "ERR";
+    case LOG_DEBUG: return "dbg";
+    case LOG_INFO: return "   ";
+    case LOG_WARN: return "WRN";
+    case LOG_ERROR: return "ERR";
     }
     return "???";
 }
@@ -72,7 +71,10 @@ void kprintf(char const* format, ...)
     va_end(args);
 }
 
-void console_set_min_level(LogLevel level) { s_min_level = level; }
+void console_set_min_level(LogLevel level)
+{
+    s_min_level = level;
+}
 
 void kvlog(LogLevel level, char const* subsystem, char const* format, va_list args)
 {

@@ -5,6 +5,7 @@
 #define _LIBC_INTERNAL_H
 
 #include <shitos/abi/syscall.h>
+
 #include <sys/types.h>
 
 /*
@@ -29,7 +30,10 @@ static inline long __syscall1(long number, long a)
 static inline long __syscall2(long number, long a, long b)
 {
     long result;
-    __asm__ volatile("syscall" : "=a"(result) : "a"(number), "D"(a), "S"(b) : "rcx", "r11", "memory");
+    __asm__ volatile("syscall"
+                     : "=a"(result)
+                     : "a"(number), "D"(a), "S"(b)
+                     : "rcx", "r11", "memory");
     return result;
 }
 

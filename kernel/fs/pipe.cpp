@@ -6,6 +6,7 @@
 #include <kernel/lib/string.h>
 #include <kernel/mm/heap.h>
 #include <kernel/sched/process.h>
+
 #include <shitos/abi/signal.h>
 
 namespace kernel::fs {
@@ -77,7 +78,10 @@ void PipeInode::on_description_closed(int flags)
     }
 }
 
-bool PipeInode::can_read_without_blocking() const { return used() > 0 || m_writers == 0; }
+bool PipeInode::can_read_without_blocking() const
+{
+    return used() > 0 || m_writers == 0;
+}
 
 ErrorOr<usize> PipeInode::read(u64, void* buffer, usize length)
 {
@@ -128,7 +132,8 @@ ErrorOr<usize> PipeInode::write(u64, void const* buffer, usize length)
         if (available() == 0) {
             if (auto* process = Process::current();
                 process != nullptr && process->has_pending_signals())
-                return written > 0 ? ErrorOr<usize>(written) : ErrorOr<usize>(Error::from_errno(EINTR));
+                return written > 0 ? ErrorOr<usize>(written)
+                                   : ErrorOr<usize>(Error::from_errno(EINTR));
             m_write_queue.wait();
             continue;
         }

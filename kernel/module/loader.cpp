@@ -115,9 +115,8 @@ ErrorOr<LoadedModule*> ModuleLoader::load(char const* name, u8 const* image, usi
             // to own whole pages. Packing .text and .data into one page means
             // dropping write permission on .text also drops it on .data, and
             // the module faults on its own first store.
-            usize const alignment = executable
-                ? PAGE_SIZE
-                : (section.sh_addralign > 1 ? section.sh_addralign : 1);
+            usize const alignment
+                = executable ? PAGE_SIZE : (section.sh_addralign > 1 ? section.sh_addralign : 1);
 
             total_size = align_up<usize>(total_size, alignment);
             placement.address = total_size; // offset for now, rebased below
@@ -151,7 +150,8 @@ ErrorOr<LoadedModule*> ModuleLoader::load(char const* name, u8 const* image, usi
         if (section.sh_type == SHT_NOBITS)
             memset(reinterpret_cast<void*>(placement.address), 0, placement.size);
         else
-            memcpy(reinterpret_cast<void*>(placement.address), image + section.sh_offset, placement.size);
+            memcpy(reinterpret_cast<void*>(placement.address), image + section.sh_offset,
+                placement.size);
     }
 
     // Resolve the symbol table once so relocation is a lookup rather than a
@@ -170,8 +170,8 @@ ErrorOr<LoadedModule*> ModuleLoader::load(char const* name, u8 const* image, usi
 
     auto const* symbols = reinterpret_cast<Elf64_Sym const*>(image + symbol_section->sh_offset);
     usize const symbol_count = symbol_section->sh_size / sizeof(Elf64_Sym);
-    auto const* symbol_strings = reinterpret_cast<char const*>(
-        image + sections[symbol_section->sh_link].sh_offset);
+    auto const* symbol_strings
+        = reinterpret_cast<char const*>(image + sections[symbol_section->sh_link].sh_offset);
 
     Vector<u64> symbol_addresses;
     TRY(symbol_addresses.reserve(symbol_count));
@@ -238,8 +238,7 @@ ErrorOr<LoadedModule*> ModuleLoader::load(char const* name, u8 const* image, usi
             auto* where = reinterpret_cast<u8*>(P);
 
             switch (type) {
-            case R_X86_64_NONE:
-                break;
+            case R_X86_64_NONE: break;
 
             case R_X86_64_64:
                 *reinterpret_cast<u64*>(where) = static_cast<u64>(static_cast<i64>(S) + A);
@@ -298,7 +297,8 @@ ErrorOr<LoadedModule*> ModuleLoader::load(char const* name, u8 const* image, usi
     }
 
     if (descriptor == nullptr) {
-        klog(LOG_ERROR, "module", "%s: no shitos_module descriptor; did you use SHITOS_MODULE()?", name);
+        klog(LOG_ERROR, "module", "%s: no shitos_module descriptor; did you use SHITOS_MODULE()?",
+            name);
         mm::free_module_memory(base, total_size);
         return Error::from_errno(ENOEXEC);
     }
@@ -333,7 +333,8 @@ ErrorOr<LoadedModule*> ModuleLoader::load(char const* name, u8 const* image, usi
     }
     new (module) LoadedModule();
 
-    strncpy(module->m_name, descriptor->name != nullptr ? descriptor->name : name, MODULE_NAME_MAX - 1);
+    strncpy(
+        module->m_name, descriptor->name != nullptr ? descriptor->name : name, MODULE_NAME_MAX - 1);
     module->m_abi_version = descriptor->abi_version;
     module->m_base = base;
     module->m_size = total_size;

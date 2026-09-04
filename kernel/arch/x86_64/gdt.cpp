@@ -100,23 +100,27 @@ void load_gdt(GdtPointer const& pointer)
 
 } // namespace
 
-TaskStateSegment& tss() { return s_tss; }
+TaskStateSegment& tss()
+{
+    return s_tss;
+}
 
-void tss_set_kernel_stack(u64 rsp0) { s_tss.rsp0 = rsp0; }
+void tss_set_kernel_stack(u64 rsp0)
+{
+    s_tss.rsp0 = rsp0;
+}
 
 void gdt_initialize()
 {
     memset(&s_gdt, 0, sizeof(s_gdt));
     memset(&s_tss, 0, sizeof(s_tss));
 
-    s_gdt.kernel_code = make_descriptor(
-        ACCESS_PRESENT | ACCESS_SEGMENT | ACCESS_EXECUTABLE | ACCESS_RW,
-        FLAG_GRANULARITY_4K | FLAG_LONG_MODE);
+    s_gdt.kernel_code
+        = make_descriptor(ACCESS_PRESENT | ACCESS_SEGMENT | ACCESS_EXECUTABLE | ACCESS_RW,
+            FLAG_GRANULARITY_4K | FLAG_LONG_MODE);
     s_gdt.kernel_data = make_descriptor(
-        ACCESS_PRESENT | ACCESS_SEGMENT | ACCESS_RW,
-        FLAG_GRANULARITY_4K | FLAG_SIZE_32);
-    s_gdt.user_data = make_descriptor(
-        ACCESS_PRESENT | ACCESS_DPL3 | ACCESS_SEGMENT | ACCESS_RW,
+        ACCESS_PRESENT | ACCESS_SEGMENT | ACCESS_RW, FLAG_GRANULARITY_4K | FLAG_SIZE_32);
+    s_gdt.user_data = make_descriptor(ACCESS_PRESENT | ACCESS_DPL3 | ACCESS_SEGMENT | ACCESS_RW,
         FLAG_GRANULARITY_4K | FLAG_SIZE_32);
     s_gdt.user_code = make_descriptor(
         ACCESS_PRESENT | ACCESS_DPL3 | ACCESS_SEGMENT | ACCESS_EXECUTABLE | ACCESS_RW,

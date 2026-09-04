@@ -237,9 +237,18 @@ unsigned long strtoul(const char* s, char** end, int base)
     return (unsigned long)strtol(s, end, base);
 }
 
-int atoi(const char* s) { return (int)strtol(s, 0, 10); }
-long atol(const char* s) { return strtol(s, 0, 10); }
-int abs(int value) { return value < 0 ? -value : value; }
+int atoi(const char* s)
+{
+    return (int)strtol(s, 0, 10);
+}
+long atol(const char* s)
+{
+    return strtol(s, 0, 10);
+}
+int abs(int value)
+{
+    return value < 0 ? -value : value;
+}
 
 /* --- environment ------------------------------------------------------- */
 

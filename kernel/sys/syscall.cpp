@@ -26,6 +26,7 @@
 #include <kernel/sched/scheduler.h>
 #include <kernel/sys/elf_loader.h>
 #include <kernel/sys/syscall.h>
+
 #include <shitos/abi/fcntl.h>
 #include <shitos/abi/mman.h>
 #include <shitos/abi/signal.h>
@@ -74,11 +75,14 @@ void syscall_initialize()
     // EFER.SCE was set in cpu_initialize; without it `syscall` faults.
     arch::write_msr(MSR_EFER, arch::read_msr(MSR_EFER) | 1);
 
-    klog(LOG_INFO, "syscall", "gate installed, %d POSIX calls + %d extensions",
-        SYS_MAX_POSIX, SYS_MAX_EXT);
+    klog(LOG_INFO, "syscall", "gate installed, %d POSIX calls + %d extensions", SYS_MAX_POSIX,
+        SYS_MAX_EXT);
 }
 
-u64 syscall_count() { return __atomic_load_n(&s_syscall_count, __ATOMIC_RELAXED); }
+u64 syscall_count()
+{
+    return __atomic_load_n(&s_syscall_count, __ATOMIC_RELAXED);
+}
 
 // --- user memory --------------------------------------------------------
 
@@ -289,8 +293,8 @@ ErrorOr<u64> sys_open(InterruptFrame&, u64 path_pointer, u64 flags, u64 mode, u6
     TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
 
     auto* process = Process::current();
-    auto* description = TRY(fs::open(path, static_cast<int>(flags), static_cast<u32>(mode),
-        process->working_directory()));
+    auto* description = TRY(fs::open(
+        path, static_cast<int>(flags), static_cast<u32>(mode), process->working_directory()));
 
     auto fd = process->allocate_descriptor(description);
     if (fd.is_error()) {
@@ -351,8 +355,8 @@ ErrorOr<u64> sys_fork(InterruptFrame& frame, u64, u64, u64, u64, u64, u64)
     return static_cast<u64>(child->pid());
 }
 
-ErrorOr<u64> sys_execve(InterruptFrame& frame, u64 path_pointer, u64 argv_pointer, u64 envp_pointer,
-    u64, u64, u64)
+ErrorOr<u64> sys_execve(
+    InterruptFrame& frame, u64 path_pointer, u64 argv_pointer, u64 envp_pointer, u64, u64, u64)
 {
     char path[fs::PATH_MAX_LENGTH];
     TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
@@ -464,7 +468,8 @@ ErrorOr<u64> sys_brk(InterruptFrame&, u64 address, u64, u64, u64, u64, u64)
     return TRY(Process::current()->set_brk(address));
 }
 
-ErrorOr<u64> sys_mmap(InterruptFrame&, u64 address, u64 length, u64 protection, u64 flags, u64 fd, u64)
+ErrorOr<u64> sys_mmap(
+    InterruptFrame&, u64 address, u64 length, u64 protection, u64 flags, u64 fd, u64)
 {
     if (length == 0)
         return Error::from_errno(EINVAL);
@@ -500,7 +505,8 @@ ErrorOr<u64> sys_munmap(InterruptFrame&, u64 address, u64 length, u64, u64, u64,
 {
     if (length == 0 || (address & (PAGE_SIZE - 1)) != 0)
         return Error::from_errno(EINVAL);
-    Process::current()->address_space()->unmap_range(virt(address), align_up<usize>(length, PAGE_SIZE));
+    Process::current()->address_space()->unmap_range(
+        virt(address), align_up<usize>(length, PAGE_SIZE));
     return static_cast<u64>(0);
 }
 
@@ -693,7 +699,8 @@ ErrorOr<u64> sys_kill(InterruptFrame&, u64 pid, u64 signal, u64, u64, u64, u64)
     return static_cast<u64>(0);
 }
 
-ErrorOr<u64> sys_sigaction(InterruptFrame&, u64 signal, u64 action_pointer, u64 old_pointer, u64, u64, u64)
+ErrorOr<u64> sys_sigaction(
+    InterruptFrame&, u64 signal, u64 action_pointer, u64 old_pointer, u64, u64, u64)
 {
     auto* process = Process::current();
     int const number = static_cast<int>(signal);
@@ -817,18 +824,10 @@ void collect_process(Process& process, void* context)
         entry.state = SHITOS_PROC_STATE_ZOMBIE;
     } else if (auto* thread = process.main_thread(); thread != nullptr) {
         switch (thread->state()) {
-        case ThreadState::Running:
-            entry.state = SHITOS_PROC_STATE_RUNNING;
-            break;
-        case ThreadState::Ready:
-            entry.state = SHITOS_PROC_STATE_READY;
-            break;
-        case ThreadState::Zombie:
-            entry.state = SHITOS_PROC_STATE_ZOMBIE;
-            break;
-        default:
-            entry.state = SHITOS_PROC_STATE_BLOCKED;
-            break;
+        case ThreadState::Running: entry.state = SHITOS_PROC_STATE_RUNNING; break;
+        case ThreadState::Ready: entry.state = SHITOS_PROC_STATE_READY; break;
+        case ThreadState::Zombie: entry.state = SHITOS_PROC_STATE_ZOMBIE; break;
+        default: entry.state = SHITOS_PROC_STATE_BLOCKED; break;
         }
     } else {
         entry.state = SHITOS_PROC_STATE_READY;
@@ -844,8 +843,8 @@ ErrorOr<u64> sys_shitos_procs(InterruptFrame&, u64 pointer, u64 capacity, u64, u
     if (wanted == 0)
         return static_cast<u64>(Process::count());
 
-    auto* entries = static_cast<struct shitos_procinfo*>(
-        kzalloc(wanted * sizeof(struct shitos_procinfo)));
+    auto* entries
+        = static_cast<struct shitos_procinfo*>(kzalloc(wanted * sizeof(struct shitos_procinfo)));
     if (entries == nullptr)
         return Error::from_errno(ENOMEM);
 
@@ -895,7 +894,8 @@ ErrorOr<u64> sys_shitos_modules(InterruptFrame&, u64 pointer, u64 capacity, u64,
     ModuleCollector collector { entries, wanted, 0 };
     ModuleLoader::for_each(collect_module, &collector);
 
-    auto copied = copy_to_user(pointer, entries, collector.count * sizeof(struct shitos_moduleinfo));
+    auto copied
+        = copy_to_user(pointer, entries, collector.count * sizeof(struct shitos_moduleinfo));
     usize const count = collector.count;
     kfree(entries);
     TRY(copied);
@@ -920,8 +920,7 @@ ErrorOr<u64> sys_shitos_shutdown(InterruptFrame&, u64 mode, u64, u64, u64, u64, 
         arch::outw(0x604, 0x2000);
         arch::outw(0xB004, 0x2000);
         break;
-    default:
-        break;
+    default: break;
     }
 
     arch::halt_forever();
@@ -992,10 +991,8 @@ bool signal_terminates_by_default(int signal)
     case SIGCHLD:
     case SIGCONT:
     case SIGURG:
-    case SIGWINCH:
-        return false;
-    default:
-        return true;
+    case SIGWINCH: return false;
+    default: return true;
     }
 }
 
@@ -1060,7 +1057,10 @@ InterruptFrame* deliver_pending_signal(InterruptFrame* frame)
     return frame;
 }
 
-[[noreturn]] void terminate_current_process(int wait_status) { do_exit(wait_status); }
+[[noreturn]] void terminate_current_process(int wait_status)
+{
+    do_exit(wait_status);
+}
 
 } // namespace kernel::sys
 
@@ -1090,8 +1090,8 @@ extern "C" kernel::InterruptFrame* syscall_dispatch(kernel::InterruptFrame* fram
     } else {
         // r10 rather than rcx for the fourth argument: the syscall instruction
         // clobbers rcx with the return address.
-        auto result = handler(*frame, frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8,
-            frame->r9);
+        auto result
+            = handler(*frame, frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8, frame->r9);
         if (result.is_error())
             frame->rax = static_cast<u64>(-result.error().code());
         else

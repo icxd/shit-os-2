@@ -91,23 +91,22 @@ private:
 
 // Unwrap or propagate. Uses a statement expression, which both clang and gcc
 // support and which is the only way to do this without exceptions.
-#define TRY(expression)                             \
-    ({                                              \
-        auto&& _tmp_result = (expression);          \
-        if (_tmp_result.is_error())                 \
-            return _tmp_result.error();             \
-        _tmp_result.release_value();                \
+#define TRY(expression)                                                                            \
+    ({                                                                                             \
+        auto&& _tmp_result = (expression);                                                         \
+        if (_tmp_result.is_error())                                                                \
+            return _tmp_result.error();                                                            \
+        _tmp_result.release_value();                                                               \
     })
 
 // Unwrap or die. Only for cases where a failure means the kernel is already
 // broken beyond repair -- never for anything a user can trigger.
-#define MUST(expression)                                                     \
-    ({                                                                       \
-        auto&& _tmp_result = (expression);                                   \
-        if (_tmp_result.is_error())                                          \
-            ::kernel::panic("MUST(%s) failed: %s", #expression,              \
-                _tmp_result.error().to_string());                            \
-        _tmp_result.release_value();                                         \
+#define MUST(expression)                                                                           \
+    ({                                                                                             \
+        auto&& _tmp_result = (expression);                                                         \
+        if (_tmp_result.is_error())                                                                \
+            ::kernel::panic("MUST(%s) failed: %s", #expression, _tmp_result.error().to_string());  \
+        _tmp_result.release_value();                                                               \
     })
 
 #define EINVAL_ERROR ::kernel::Error::from_errno(EINVAL)

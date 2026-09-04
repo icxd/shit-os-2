@@ -10,8 +10,10 @@
 #pragma once
 
 #include <kernel/lib/format.h>
+
 #include <shitos/module/api.h>
 #include <shitos/types.h>
+
 #include <stdarg.h>
 
 namespace kernel {

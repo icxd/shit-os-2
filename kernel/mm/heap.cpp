@@ -103,7 +103,8 @@ bool refill_class(usize class_index)
 
 AllocationHeader* header_of(void* payload)
 {
-    return reinterpret_cast<AllocationHeader*>(static_cast<u8*>(payload) - sizeof(AllocationHeader));
+    return reinterpret_cast<AllocationHeader*>(
+        static_cast<u8*>(payload) - sizeof(AllocationHeader));
 }
 
 } // namespace

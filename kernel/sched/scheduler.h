@@ -16,6 +16,7 @@
 #include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/lib/error.h>
 #include <kernel/sched/thread.h>
+
 #include <shitos/types.h>
 
 namespace kernel {

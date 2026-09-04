@@ -6,9 +6,9 @@
 #include <kernel/lib/new.h>
 #include <kernel/lib/string.h>
 #include <kernel/mm/heap.h>
+#include <kernel/panic.h>
 #include <kernel/sched/scheduler.h>
 #include <kernel/sched/thread.h>
-#include <kernel/panic.h>
 
 extern "C" {
 extern u8 boot_stack_top[];
@@ -25,16 +25,11 @@ u32 s_next_tid = 1;
 char const* to_string(ThreadState state)
 {
     switch (state) {
-    case ThreadState::Ready:
-        return "ready";
-    case ThreadState::Running:
-        return "running";
-    case ThreadState::Blocked:
-        return "blocked";
-    case ThreadState::Sleeping:
-        return "sleeping";
-    case ThreadState::Zombie:
-        return "zombie";
+    case ThreadState::Ready: return "ready";
+    case ThreadState::Running: return "running";
+    case ThreadState::Blocked: return "blocked";
+    case ThreadState::Sleeping: return "sleeping";
+    case ThreadState::Zombie: return "zombie";
     }
     return "?";
 }
@@ -52,7 +47,8 @@ extern "C" void kernel_thread_trampoline(void (*entry)(void*), void* argument)
 
 } // namespace
 
-ErrorOr<Thread*> Thread::create_kernel_thread(char const* name, void (*entry)(void*), void* argument)
+ErrorOr<Thread*> Thread::create_kernel_thread(
+    char const* name, void (*entry)(void*), void* argument)
 {
     auto* thread = static_cast<Thread*>(kzalloc(sizeof(Thread)));
     if (thread == nullptr)

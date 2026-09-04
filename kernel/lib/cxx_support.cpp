@@ -9,6 +9,7 @@
 
 #include <kernel/mm/heap.h>
 #include <kernel/panic.h>
+
 #include <shitos/types.h>
 
 extern "C" {
@@ -42,12 +43,30 @@ void __stack_chk_fail()
 // forward to the kernel heap; before the heap exists, using them is a bug and
 // says so rather than corrupting memory quietly.
 
-void* operator new(usize size) { return ::kernel::kmalloc(size); }
-void* operator new[](usize size) { return ::kernel::kmalloc(size); }
-void operator delete(void* ptr) noexcept { ::kernel::kfree(ptr); }
-void operator delete[](void* ptr) noexcept { ::kernel::kfree(ptr); }
-void operator delete(void* ptr, usize) noexcept { ::kernel::kfree(ptr); }
-void operator delete[](void* ptr, usize) noexcept { ::kernel::kfree(ptr); }
+void* operator new(usize size)
+{
+    return ::kernel::kmalloc(size);
+}
+void* operator new[](usize size)
+{
+    return ::kernel::kmalloc(size);
+}
+void operator delete(void* ptr) noexcept
+{
+    ::kernel::kfree(ptr);
+}
+void operator delete[](void* ptr) noexcept
+{
+    ::kernel::kfree(ptr);
+}
+void operator delete(void* ptr, usize) noexcept
+{
+    ::kernel::kfree(ptr);
+}
+void operator delete[](void* ptr, usize) noexcept
+{
+    ::kernel::kfree(ptr);
+}
 
 // Placement new lives in kernel/lib/new.h, defined inline: the compiler treats
 // those overloads specially and a separate definition here would clash.

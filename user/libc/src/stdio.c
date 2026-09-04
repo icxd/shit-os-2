@@ -30,9 +30,9 @@ struct _FILE {
 
     char* buffer;
     size_t capacity;
-    size_t pending;   /* bytes waiting in the buffer to be written */
+    size_t pending; /* bytes waiting in the buffer to be written */
     size_t available; /* bytes read into the buffer but not yet returned */
-    size_t position;  /* how far through `available` the reader has got */
+    size_t position; /* how far through `available` the reader has got */
 
     int unget;
 };
@@ -143,7 +143,10 @@ int fputs(const char* s, FILE* stream)
     return 0;
 }
 
-int putchar(int c) { return fputc(c, stdout); }
+int putchar(int c)
+{
+    return fputc(c, stdout);
+}
 
 int puts(const char* s)
 {
@@ -232,7 +235,10 @@ char* fgets(char* buffer, int size, FILE* stream)
     return buffer;
 }
 
-int getchar(void) { return fgetc(stdin); }
+int getchar(void)
+{
+    return fgetc(stdin);
+}
 
 size_t fread(void* buffer, size_t size, size_t count, FILE* stream)
 {
@@ -265,9 +271,7 @@ FILE* fopen(const char* path, const char* mode)
         flags = O_CREAT | O_APPEND | ((mode[1] == '+') ? O_RDWR : O_WRONLY);
         stream_flags = FLAG_WRITABLE | ((mode[1] == '+') ? FLAG_READABLE : 0);
         break;
-    default:
-        errno = EINVAL;
-        return 0;
+    default: errno = EINVAL; return 0;
     }
 
     FILE* stream = 0;
@@ -312,9 +316,18 @@ int fclose(FILE* stream)
     return result;
 }
 
-int feof(FILE* stream) { return (stream->flags & FLAG_EOF) != 0; }
-int ferror(FILE* stream) { return (stream->flags & FLAG_ERROR) != 0; }
-int fileno(FILE* stream) { return stream->fd; }
+int feof(FILE* stream)
+{
+    return (stream->flags & FLAG_EOF) != 0;
+}
+int ferror(FILE* stream)
+{
+    return (stream->flags & FLAG_ERROR) != 0;
+}
+int fileno(FILE* stream)
+{
+    return stream->fd;
+}
 
 /* --- formatting -------------------------------------------------------- */
 
@@ -374,10 +387,22 @@ static int format_into(Sink* sink, const char* format, va_list args)
         int left_align = 0, zero_pad = 0, force_sign = 0, alternate = 0;
         for (int parsing = 1; parsing;) {
             switch (*p) {
-            case '-': left_align = 1; ++p; break;
-            case '0': zero_pad = 1; ++p; break;
-            case '+': force_sign = 1; ++p; break;
-            case '#': alternate = 1; ++p; break;
+            case '-':
+                left_align = 1;
+                ++p;
+                break;
+            case '0':
+                zero_pad = 1;
+                ++p;
+                break;
+            case '+':
+                force_sign = 1;
+                ++p;
+                break;
+            case '#':
+                alternate = 1;
+                ++p;
+                break;
             case ' ': ++p; break;
             default: parsing = 0; break;
             }
@@ -436,8 +461,8 @@ static int format_into(Sink* sink, const char* format, va_list args)
         case 'd':
         case 'i': {
             long long value = length_modifier >= 2 ? va_arg(args, long long)
-                : length_modifier == 1              ? va_arg(args, long)
-                                                    : va_arg(args, int);
+                : length_modifier == 1             ? va_arg(args, long)
+                                                   : va_arg(args, int);
             int const negative = value < 0;
             unsigned long long magnitude
                 = negative ? ~(unsigned long long)value + 1 : (unsigned long long)value;
@@ -449,7 +474,7 @@ static int format_into(Sink* sink, const char* format, va_list args)
         case 'x':
         case 'X':
         case 'o': {
-            unsigned long long value = length_modifier >= 2 ? va_arg(args, unsigned long long)
+            unsigned long long value = length_modifier >= 2      ? va_arg(args, unsigned long long)
                 : (length_modifier == 1 || length_modifier == 3) ? va_arg(args, unsigned long)
                                                                  : va_arg(args, unsigned int);
             unsigned base = 10;
@@ -482,8 +507,7 @@ static int format_into(Sink* sink, const char* format, va_list args)
             if (!body)
                 body = "(null)";
             break;
-        case '\0':
-            return (int)sink->written;
+        case '\0': return (int)sink->written;
         default:
             emit(sink, '%');
             emit(sink, *p);
@@ -524,7 +548,10 @@ int vfprintf(FILE* stream, const char* format, va_list args)
     return format_into(&sink, format, args);
 }
 
-int vprintf(const char* format, va_list args) { return vfprintf(stdout, format, args); }
+int vprintf(const char* format, va_list args)
+{
+    return vfprintf(stdout, format, args);
+}
 
 int vsnprintf(char* buffer, size_t size, const char* format, va_list args)
 {

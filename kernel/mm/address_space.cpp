@@ -45,9 +45,15 @@ constexpr usize index_of(u64 address, int level)
     return (address >> (12 + 9 * (level - 1))) & 0x1FF;
 }
 
-u64* table_at(u64 entry) { return static_cast<u64*>(phys_to_virt(phys(entry & ADDRESS_MASK))); }
+u64* table_at(u64 entry)
+{
+    return static_cast<u64*>(phys_to_virt(phys(entry & ADDRESS_MASK)));
+}
 
-void flush(u64 address) { arch::invlpg(address); }
+void flush(u64 address)
+{
+    arch::invlpg(address);
+}
 
 } // namespace
 
@@ -57,7 +63,8 @@ ErrorOr<u64*> AddressSpace::ensure_table(u64* table, usize index, bool user_acce
 
     if (!(entry & static_cast<u64>(PageFlags::Present))) {
         auto const page = TRY(allocate_zeroed_page());
-        entry = raw(page) | static_cast<u64>(PageFlags::Present) | static_cast<u64>(PageFlags::Writable);
+        entry = raw(page) | static_cast<u64>(PageFlags::Present)
+            | static_cast<u64>(PageFlags::Writable);
     }
 
     // An intermediate entry has to be at least as permissive as the leaf below
@@ -92,7 +99,8 @@ ErrorOr<void> AddressSpace::map(VirtAddr address, PhysAddr page, PageFlags flags
     return {};
 }
 
-ErrorOr<void> AddressSpace::map_range(VirtAddr address, PhysAddr base, usize length, PageFlags flags)
+ErrorOr<void> AddressSpace::map_range(
+    VirtAddr address, PhysAddr base, usize length, PageFlags flags)
 {
     u64 const start = align_down<u64>(raw(address), PAGE_SIZE);
     u64 const end = align_up<u64>(raw(address) + length, PAGE_SIZE);
@@ -175,7 +183,10 @@ ErrorOr<PhysAddr> AddressSpace::translate(VirtAddr address) const
     return phys((entry & ADDRESS_MASK) + (virtual_address & (PAGE_SIZE - 1)));
 }
 
-bool AddressSpace::is_mapped(VirtAddr address) const { return !translate(address).is_error(); }
+bool AddressSpace::is_mapped(VirtAddr address) const
+{
+    return !translate(address).is_error();
+}
 
 ErrorOr<PageFlags> AddressSpace::query(VirtAddr address) const
 {
@@ -314,7 +325,10 @@ ErrorOr<void> AddressSpace::protect(VirtAddr address, usize length, PageFlags fl
     return {};
 }
 
-void AddressSpace::activate() const { arch::write_cr3(raw(m_root)); }
+void AddressSpace::activate() const
+{
+    arch::write_cr3(raw(m_root));
+}
 
 AddressSpace& AddressSpace::kernel_space()
 {
@@ -367,14 +381,15 @@ ErrorOr<AddressSpace*> AddressSpace::clone_user_space() const
                     || (pd_entry & static_cast<u64>(PageFlags::Huge)))
                     continue;
 
-                u64 const* pt = static_cast<u64 const*>(phys_to_virt(phys(pd_entry & ADDRESS_MASK)));
+                u64 const* pt
+                    = static_cast<u64 const*>(phys_to_virt(phys(pd_entry & ADDRESS_MASK)));
                 for (usize pt_index = 0; pt_index < ENTRIES_PER_TABLE; ++pt_index) {
                     u64 const pt_entry = pt[pt_index];
                     if (!(pt_entry & static_cast<u64>(PageFlags::Present)))
                         continue;
 
-                    u64 const address = (pml4_index << 39) | (pdpt_index << 30)
-                        | (pd_index << 21) | (pt_index << 12);
+                    u64 const address = (pml4_index << 39) | (pdpt_index << 30) | (pd_index << 21)
+                        | (pt_index << 12);
 
                     auto frame = allocate_page();
                     if (frame.is_error()) {
@@ -383,8 +398,8 @@ ErrorOr<AddressSpace*> AddressSpace::clone_user_space() const
                         return frame.error();
                     }
 
-                    memcpy(phys_to_virt(frame.value()),
-                        phys_to_virt(phys(pt_entry & ADDRESS_MASK)), PAGE_SIZE);
+                    memcpy(phys_to_virt(frame.value()), phys_to_virt(phys(pt_entry & ADDRESS_MASK)),
+                        PAGE_SIZE);
 
                     auto const flags = static_cast<PageFlags>(pt_entry & ~ADDRESS_MASK);
                     if (auto mapped = copy->map(virt(address), frame.value(), flags);
@@ -420,7 +435,8 @@ ErrorOr<void*> map_mmio(PhysAddr base, usize length)
     auto const flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute
         | PageFlags::CacheDisable | PageFlags::Global;
 
-    TRY(AddressSpace::kernel_space().map_range(virt(window), phys(aligned_base), mapped_length, flags));
+    TRY(AddressSpace::kernel_space().map_range(
+        virt(window), phys(aligned_base), mapped_length, flags));
     s_mmio_next += mapped_length;
 
     return reinterpret_cast<void*>(window + page_offset);
@@ -449,8 +465,8 @@ ErrorOr<void*> allocate_module_memory(usize length)
     u64 const base = s_module_next;
     // Writable and non-executable to begin with. The loader relocates into it
     // and then re-protects the sections that need to run.
-    auto const flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute
-        | PageFlags::Global;
+    auto const flags
+        = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute | PageFlags::Global;
 
     TRY(AddressSpace::kernel_space().map_anonymous(virt(base), rounded, flags));
     s_module_next += rounded;
@@ -506,9 +522,9 @@ void virtual_memory_initialize(boot::BootInfo const& info)
     }
     u64 const hhdm_size = align_up<u64>(highest_usable, HUGE_PAGE_SIZE);
 
-    auto const hhdm_flags = static_cast<u64>(PageFlags::Present) | static_cast<u64>(PageFlags::Writable)
-        | static_cast<u64>(PageFlags::NoExecute) | static_cast<u64>(PageFlags::Global)
-        | static_cast<u64>(PageFlags::Huge);
+    auto const hhdm_flags = static_cast<u64>(PageFlags::Present)
+        | static_cast<u64>(PageFlags::Writable) | static_cast<u64>(PageFlags::NoExecute)
+        | static_cast<u64>(PageFlags::Global) | static_cast<u64>(PageFlags::Huge);
 
     for (u64 offset = 0; offset < hhdm_size; offset += HUGE_PAGE_SIZE) {
         u64 const address = HHDM_BASE + offset;
@@ -550,7 +566,8 @@ void virtual_memory_initialize(boot::BootInfo const& info)
         u64 const start = align_down<u64>(reinterpret_cast<u64>(section.start), PAGE_SIZE);
         u64 const end = align_up<u64>(reinterpret_cast<u64>(section.end), PAGE_SIZE);
         for (u64 address = start; address < end; address += PAGE_SIZE) {
-            auto result = s_kernel_space->map(virt(address), phys(address - KERNEL_VMA), section.flags);
+            auto result
+                = s_kernel_space->map(virt(address), phys(address - KERNEL_VMA), section.flags);
             if (result.is_error())
                 panic("could not map kernel section %s at %p", section.name,
                     reinterpret_cast<void*>(address));

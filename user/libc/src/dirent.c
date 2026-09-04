@@ -44,8 +44,8 @@ struct dirent* readdir(DIR* directory)
         return 0;
 
     if (directory->position >= directory->available) {
-        long const count = __syscall3(SYS_getdents, directory->fd, (long)directory->buffer,
-            (long)sizeof(directory->buffer));
+        long const count = __syscall3(
+            SYS_getdents, directory->fd, (long)directory->buffer, (long)sizeof(directory->buffer));
         if (count <= 0) {
             if (count < 0)
                 errno = (int)-count;
@@ -71,7 +71,10 @@ void rewinddir(DIR* directory)
     directory->position = 0;
 }
 
-int dirfd(DIR* directory) { return directory ? directory->fd : -1; }
+int dirfd(DIR* directory)
+{
+    return directory ? directory->fd : -1;
+}
 
 int closedir(DIR* directory)
 {

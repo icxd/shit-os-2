@@ -11,6 +11,7 @@
 #define _SHITOS_H
 
 #include <shitos/abi/syscall.h>
+
 #include <sys/types.h>
 
 int shitos_sysinfo(struct shitos_sysinfo* out);

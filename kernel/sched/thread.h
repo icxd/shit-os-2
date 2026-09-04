@@ -13,6 +13,7 @@
 #include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/lib/error.h>
 #include <kernel/lib/intrusive_list.h>
+
 #include <shitos/types.h>
 
 namespace kernel {
@@ -20,11 +21,11 @@ namespace kernel {
 class Process;
 
 enum class ThreadState : u32 {
-    Ready,    // runnable, waiting for a CPU
-    Running,  // on a CPU right now
-    Blocked,  // waiting on a wait queue
+    Ready, // runnable, waiting for a CPU
+    Running, // on a CPU right now
+    Blocked, // waiting on a wait queue
     Sleeping, // waiting for a deadline
-    Zombie,   // finished, waiting to be reaped
+    Zombie, // finished, waiting to be reaped
 };
 
 char const* to_string(ThreadState state);
@@ -38,7 +39,8 @@ inline constexpr u32 DEFAULT_QUANTUM_TICKS = 5;
 
 class Thread {
 public:
-    static ErrorOr<Thread*> create_kernel_thread(char const* name, void (*entry)(void*), void* argument);
+    static ErrorOr<Thread*> create_kernel_thread(
+        char const* name, void (*entry)(void*), void* argument);
 
     // Wraps the context the kernel is already running in, so that the very
     // first context switch has somewhere to save its state.

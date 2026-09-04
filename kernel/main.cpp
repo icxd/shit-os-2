@@ -8,9 +8,9 @@
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/arch/x86_64/gdt.h>
 #include <kernel/arch/x86_64/interrupts.h>
+#include <kernel/arch/x86_64/io.h>
 #include <kernel/arch/x86_64/percpu.h>
 #include <kernel/arch/x86_64/pit.h>
-#include <kernel/arch/x86_64/io.h>
 #include <kernel/arch/x86_64/serial.h>
 #include <kernel/boot/boot_info.h>
 #include <kernel/dev/console.h>
@@ -26,9 +26,9 @@
 #include <kernel/panic.h>
 #include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
+#include <kernel/selftest.h>
 #include <kernel/sys/syscall.h>
 #include <kernel/sys/userland.h>
-#include <kernel/selftest.h>
 
 namespace kernel {
 
@@ -39,20 +39,13 @@ namespace {
 char const* memory_kind_name(boot::MemoryKind kind)
 {
     switch (kind) {
-    case boot::MemoryKind::Usable:
-        return "usable";
-    case boot::MemoryKind::Reserved:
-        return "reserved";
-    case boot::MemoryKind::AcpiReclaimable:
-        return "acpi";
-    case boot::MemoryKind::AcpiNvs:
-        return "acpi-nvs";
-    case boot::MemoryKind::Bad:
-        return "bad";
-    case boot::MemoryKind::KernelImage:
-        return "kernel";
-    case boot::MemoryKind::BootModule:
-        return "module";
+    case boot::MemoryKind::Usable: return "usable";
+    case boot::MemoryKind::Reserved: return "reserved";
+    case boot::MemoryKind::AcpiReclaimable: return "acpi";
+    case boot::MemoryKind::AcpiNvs: return "acpi-nvs";
+    case boot::MemoryKind::Bad: return "bad";
+    case boot::MemoryKind::KernelImage: return "kernel";
+    case boot::MemoryKind::BootModule: return "module";
     }
     return "?";
 }
@@ -89,24 +82,22 @@ void print_boot_summary(boot::BootInfo const& info)
 
     for (usize i = 0; i < info.memory_region_count; ++i) {
         auto const& region = info.memory_regions[i];
-        klog(LOG_DEBUG, "mem", "  %p..%p  %-9s %llu KiB",
-            reinterpret_cast<void*>(region.base),
-            reinterpret_cast<void*>(region.base + region.length),
-            memory_kind_name(region.kind), region.length / 1024);
+        klog(LOG_DEBUG, "mem", "  %p..%p  %-9s %llu KiB", reinterpret_cast<void*>(region.base),
+            reinterpret_cast<void*>(region.base + region.length), memory_kind_name(region.kind),
+            region.length / 1024);
     }
 
     for (usize i = 0; i < info.module_count; ++i) {
         auto const& module = info.modules[i];
         klog(LOG_INFO, "boot", "module '%s' at %p..%p", module.name,
-            reinterpret_cast<void*>(module.phys_start),
-            reinterpret_cast<void*>(module.phys_end));
+            reinterpret_cast<void*>(module.phys_start), reinterpret_cast<void*>(module.phys_end));
     }
 
     auto const& fb = info.framebuffer;
     switch (fb.format) {
     case boot::FramebufferFormat::Rgb:
-        klog(LOG_INFO, "fbcon", "%ux%ux%u linear rgb at %p, %u cols x %u rows", fb.width,
-            fb.height, fb.bits_per_pixel, reinterpret_cast<void*>(fb.phys_address),
+        klog(LOG_INFO, "fbcon", "%ux%ux%u linear rgb at %p, %u cols x %u rows", fb.width, fb.height,
+            fb.bits_per_pixel, reinterpret_cast<void*>(fb.phys_address),
             dev::framebuffer_console().columns(), dev::framebuffer_console().rows());
         break;
     case boot::FramebufferFormat::EgaText:
@@ -193,14 +184,14 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
         if (auto input = Thread::create_kernel_thread("tty-kbd", dev::tty_input_thread, nullptr);
             !input.is_error())
             Scheduler::enqueue(input.value());
-        if (auto serial = Thread::create_kernel_thread("tty-serial", dev::tty_serial_input_thread,
-                nullptr);
+        if (auto serial
+            = Thread::create_kernel_thread("tty-serial", dev::tty_serial_input_thread, nullptr);
             !serial.is_error())
             Scheduler::enqueue(serial.value());
     }
 
-    klog(LOG_INFO, "boot", "stage E complete: runtime-loadable driver modules");
-    klog(LOG_INFO, "boot", "uptime %llu ms, %zu threads, %llu context switches",
+    
+    klog(LOG_INFO, "boot", "ready in %llu ms: %zu threads, %llu context switches",
         Scheduler::uptime_ms(), Scheduler::thread_count(), Scheduler::context_switches());
 
     if (auto started = sys::start_init("/bin/init"); started.is_error()) {

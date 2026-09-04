@@ -25,7 +25,12 @@
 
 #define BUFFER_SIZE 256
 
-/* Scancode set 1, US layout, indexed by make code. */
+/*
+ * Scancode set 1, US layout, indexed by make code. The row structure is
+ * meaningful -- each line is a physical row of the keyboard -- so the formatter
+ * is told to leave it alone.
+ */
+/* clang-format off */
 static const char SCANCODE_TO_ASCII[128] = {
     0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
     '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -63,6 +68,7 @@ static const char SCANCODE_TO_ASCII_SHIFTED[128] = {
     '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.',
     0, 0, 0, 0, 0,
 };
+/* clang-format on */
 
 #define KEY_LEFT_CONTROL 0x1D
 #define KEY_LEFT_SHIFT 0x2A
@@ -169,20 +175,14 @@ static bool keyboard_irq(void* self, u8 irq)
 
     switch (code) {
     case KEY_LEFT_SHIFT:
-    case KEY_RIGHT_SHIFT:
-        keyboard->shift_held = !released;
-        return true;
-    case KEY_LEFT_CONTROL:
-        keyboard->control_held = !released;
-        return true;
+    case KEY_RIGHT_SHIFT: keyboard->shift_held = !released; return true;
+    case KEY_LEFT_CONTROL: keyboard->control_held = !released; return true;
     case KEY_CAPS_LOCK:
         if (!released)
             keyboard->caps_lock = !keyboard->caps_lock;
         return true;
-    case KEY_LEFT_ALT:
-        return true;
-    default:
-        break;
+    case KEY_LEFT_ALT: return true;
+    default: break;
     }
 
     if (released)

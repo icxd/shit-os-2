@@ -119,9 +119,7 @@ usize vformat(FormatSink sink, void* context, char const* format, va_list args)
                 spec.alternate = true;
                 ++p;
                 break;
-            default:
-                parsing_flags = false;
-                break;
+            default: parsing_flags = false; break;
             }
         }
 
@@ -162,7 +160,8 @@ usize vformat(FormatSink sink, void* context, char const* format, va_list args)
 
             bool const negative = value < 0;
             // Negate in unsigned space so INT64_MIN does not overflow.
-            u64 const magnitude = negative ? (~static_cast<u64>(value) + 1) : static_cast<u64>(value);
+            u64 const magnitude
+                = negative ? (~static_cast<u64>(value) + 1) : static_cast<u64>(value);
             char const* body = render_unsigned(magnitude, 10, false, scratch_end);
             char const* prefix = negative ? "-" : (spec.force_sign ? "+" : nullptr);
             emit_padded(out, spec, prefix, body);

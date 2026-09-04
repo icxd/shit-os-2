@@ -25,11 +25,20 @@ InterruptSpinLock s_lock;
 
 constexpr usize BITS_PER_WORD = 64;
 
-bool test_bit(usize index) { return (s_bitmap[index / BITS_PER_WORD] >> (index % BITS_PER_WORD)) & 1; }
+bool test_bit(usize index)
+{
+    return (s_bitmap[index / BITS_PER_WORD] >> (index % BITS_PER_WORD)) & 1;
+}
 
-void set_bit(usize index) { s_bitmap[index / BITS_PER_WORD] |= 1ULL << (index % BITS_PER_WORD); }
+void set_bit(usize index)
+{
+    s_bitmap[index / BITS_PER_WORD] |= 1ULL << (index % BITS_PER_WORD);
+}
 
-void clear_bit(usize index) { s_bitmap[index / BITS_PER_WORD] &= ~(1ULL << (index % BITS_PER_WORD)); }
+void clear_bit(usize index)
+{
+    s_bitmap[index / BITS_PER_WORD] &= ~(1ULL << (index % BITS_PER_WORD));
+}
 
 void mark_used(usize first, usize count)
 {
@@ -71,7 +80,8 @@ bool range_is_clear(boot::BootInfo const& info, u64 base, u64 length)
     u64 const end = base + length;
     for (usize i = 0; i < info.memory_region_count; ++i) {
         auto const& region = info.memory_regions[i];
-        if (region.kind != boot::MemoryKind::KernelImage && region.kind != boot::MemoryKind::BootModule)
+        if (region.kind != boot::MemoryKind::KernelImage
+            && region.kind != boot::MemoryKind::BootModule)
             continue;
         u64 const region_end = region.base + region.length;
         if (base < region_end && region.base < end)
@@ -142,7 +152,8 @@ void physical_initialize(boot::BootInfo const& info)
     // actually available: the kernel, the modules, and the bitmap itself.
     for (usize i = 0; i < info.memory_region_count; ++i) {
         auto const& region = info.memory_regions[i];
-        if (region.kind == boot::MemoryKind::KernelImage || region.kind == boot::MemoryKind::BootModule)
+        if (region.kind == boot::MemoryKind::KernelImage
+            || region.kind == boot::MemoryKind::BootModule)
             apply_to_range(region.base, region.length, mark_used);
     }
     apply_to_range(bitmap_phys, bitmap_bytes, mark_used);
@@ -221,7 +232,10 @@ ErrorOr<PhysAddr> allocate_contiguous(usize count)
     return Error::from_errno(ENOMEM);
 }
 
-void free_page(PhysAddr page) { free_contiguous(page, 1); }
+void free_page(PhysAddr page)
+{
+    free_contiguous(page, 1);
+}
 
 void free_contiguous(PhysAddr base, usize count)
 {
@@ -246,8 +260,17 @@ void reserve_range(PhysAddr base, usize length)
     apply_to_range(raw(base), length, mark_used);
 }
 
-usize total_pages() { return s_total_pages; }
-usize free_pages() { return s_total_pages - s_used_pages; }
-usize used_pages() { return s_used_pages; }
+usize total_pages()
+{
+    return s_total_pages;
+}
+usize free_pages()
+{
+    return s_total_pages - s_used_pages;
+}
+usize used_pages()
+{
+    return s_used_pages;
+}
 
 } // namespace kernel::mm

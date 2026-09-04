@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# shit os 2 house style. See CONTRIBUTING.md for the prose version.
+
+Language: Cpp
+BasedOnStyle: WebKit
+Standard: c++20
+
+AccessModifierOffset: -4
+AlignAfterOpenBracket: DontAlign
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortCaseLabelsOnASingleLine: true   # keeps lookup tables readable
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: Yes
+BreakBeforeBraces: WebKit
+BreakConstructorInitializers: BeforeComma
+ColumnLimit: 100
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+IndentWidth: 4
+KeepEmptyLinesAtTheStartOfBlocks: false
+NamespaceIndentation: None
+PointerAlignment: Left
+SpaceAfterTemplateKeyword: false
+TabWidth: 4
+UseTab: Never
+
+# Headers in three groups: this project's shitos/ ABI, then kernel/ or libc
+# internals, then anything the compiler provides.
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<(kernel|user)/'
+    Priority: 1
+  - Regex: '^<shitos/'
+    Priority: 2
+  - Regex: '^".*"'
+    Priority: 3
+  - Regex: '^<.*>'
+    Priority: 4

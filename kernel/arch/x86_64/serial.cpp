@@ -33,7 +33,7 @@ bool SerialPort::initialize()
 {
     outb(m_io_base + REG_INTERRUPT_ENABLE, 0x00); // polling only, for now
     outb(m_io_base + REG_LINE_CONTROL, LINE_CONTROL_DLAB);
-    outb(m_io_base + REG_DIVISOR_LOW, 0x01);  // divisor 1 => 115200 baud
+    outb(m_io_base + REG_DIVISOR_LOW, 0x01); // divisor 1 => 115200 baud
     outb(m_io_base + REG_DIVISOR_HIGH, 0x00);
     outb(m_io_base + REG_LINE_CONTROL, LINE_CONTROL_8N1);
     outb(m_io_base + REG_FIFO_CONTROL, 0xC7); // enable + clear FIFOs, 14-byte trigger
@@ -87,8 +87,14 @@ char SerialPort::read_char()
     return static_cast<char>(inb(m_io_base + REG_DATA));
 }
 
-SerialPort& serial_com1() { return s_com1; }
+SerialPort& serial_com1()
+{
+    return s_com1;
+}
 
-bool serial_initialize() { return s_com1.initialize(); }
+bool serial_initialize()
+{
+    return s_com1.initialize();
+}
 
 } // namespace kernel::arch

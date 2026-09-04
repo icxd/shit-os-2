@@ -27,7 +27,8 @@ mm::PageFlags flags_for_segment(Elf64_Word p_flags)
 
 } // namespace
 
-ErrorOr<void> copy_into_space(mm::AddressSpace& space, u64 destination, void const* source, usize length)
+ErrorOr<void> copy_into_space(
+    mm::AddressSpace& space, u64 destination, void const* source, usize length)
 {
     auto const* bytes = static_cast<u8 const*>(source);
     usize copied = 0;
@@ -47,7 +48,8 @@ ErrorOr<void> copy_into_space(mm::AddressSpace& space, u64 destination, void con
     return {};
 }
 
-ErrorOr<void> copy_out_of_space(mm::AddressSpace& space, void* destination, u64 source, usize length)
+ErrorOr<void> copy_out_of_space(
+    mm::AddressSpace& space, void* destination, u64 source, usize length)
 {
     auto* bytes = static_cast<u8*>(destination);
     usize copied = 0;
@@ -131,14 +133,16 @@ ErrorOr<LoadedExecutable> load_executable(fs::Inode& inode, mm::AddressSpace& sp
                 return Error::from_errno(ENOMEM);
             }
 
-            auto file_bytes = inode.read(segment.p_offset, staging, static_cast<usize>(segment.p_filesz));
+            auto file_bytes
+                = inode.read(segment.p_offset, staging, static_cast<usize>(segment.p_filesz));
             if (file_bytes.is_error() || file_bytes.value() != segment.p_filesz) {
                 kfree(staging);
                 kfree(program_headers);
                 return Error::from_errno(ENOEXEC);
             }
 
-            auto copied = copy_into_space(space, segment.p_vaddr, staging, static_cast<usize>(segment.p_filesz));
+            auto copied = copy_into_space(
+                space, segment.p_vaddr, staging, static_cast<usize>(segment.p_filesz));
             kfree(staging);
             if (copied.is_error()) {
                 kfree(program_headers);
@@ -149,8 +153,8 @@ ErrorOr<LoadedExecutable> load_executable(fs::Inode& inode, mm::AddressSpace& sp
         // map_anonymous hands back zeroed pages, so the .bss tail is already
         // zero and there is nothing more to do for p_memsz > p_filesz.
 
-        if (auto protected_result = space.protect(virt(start), end - start,
-                flags_for_segment(segment.p_flags));
+        if (auto protected_result
+            = space.protect(virt(start), end - start, flags_for_segment(segment.p_flags));
             protected_result.is_error()) {
             kfree(program_headers);
             return protected_result.error();
@@ -231,7 +235,8 @@ ErrorOr<u64> setup_user_stack(mm::AddressSpace& space, LoadedExecutable const& e
     // Lay the whole thing out in a kernel buffer first, then copy it across in
     // one pass; poking a not-currently-mapped address space a word at a time
     // would be needlessly slow and much easier to get wrong.
-    usize const total = align_up<usize>(sizeof(u64) + pointer_bytes + auxiliary_bytes + string_area, 16);
+    usize const total
+        = align_up<usize>(sizeof(u64) + pointer_bytes + auxiliary_bytes + string_area, 16);
     if (total > USER_STACK_SIZE / 2)
         return Error::from_errno(E2BIG);
 

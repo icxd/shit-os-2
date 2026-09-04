@@ -3,19 +3,19 @@
 
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/arch/x86_64/interrupts.h>
+#include <kernel/arch/x86_64/percpu.h>
+#include <kernel/arch/x86_64/pit.h>
 #include <kernel/boot/boot_info.h>
+#include <kernel/dev/console.h>
 #include <kernel/fs/devfs.h>
-#include <kernel/module/loader.h>
 #include <kernel/fs/tmpfs.h>
 #include <kernel/fs/vfs.h>
-#include <kernel/dev/console.h>
 #include <kernel/lib/elf.h>
 #include <kernel/lib/string.h>
 #include <kernel/mm/address_space.h>
 #include <kernel/mm/heap.h>
 #include <kernel/mm/physical.h>
-#include <kernel/arch/x86_64/percpu.h>
-#include <kernel/arch/x86_64/pit.h>
+#include <kernel/module/loader.h>
 #include <kernel/panic.h>
 #include <kernel/sched/scheduler.h>
 #include <kernel/sched/waitqueue.h>
@@ -221,21 +221,25 @@ void test_address_space()
     if (!text_flags.is_error()) {
         check(!mm::has_flag(text_flags.value(), mm::PageFlags::Writable), ".text is not writable");
         check(!mm::has_flag(text_flags.value(), mm::PageFlags::NoExecute), ".text is executable");
-        check(!mm::has_flag(text_flags.value(), mm::PageFlags::User), ".text is not user accessible");
+        check(
+            !mm::has_flag(text_flags.value(), mm::PageFlags::User), ".text is not user accessible");
     }
 
     auto const rodata_flags = space.query(virt(reinterpret_cast<u64>(__rodata_start)));
     check(!rodata_flags.is_error(), ".rodata is mapped");
     if (!rodata_flags.is_error()) {
-        check(!mm::has_flag(rodata_flags.value(), mm::PageFlags::Writable), ".rodata is not writable");
-        check(mm::has_flag(rodata_flags.value(), mm::PageFlags::NoExecute), ".rodata is not executable");
+        check(!mm::has_flag(rodata_flags.value(), mm::PageFlags::Writable),
+            ".rodata is not writable");
+        check(mm::has_flag(rodata_flags.value(), mm::PageFlags::NoExecute),
+            ".rodata is not executable");
     }
 
     auto const data_flags = space.query(virt(reinterpret_cast<u64>(__data_start)));
     check(!data_flags.is_error(), ".data is mapped");
     if (!data_flags.is_error()) {
         check(mm::has_flag(data_flags.value(), mm::PageFlags::Writable), ".data is writable");
-        check(mm::has_flag(data_flags.value(), mm::PageFlags::NoExecute), ".data is not executable");
+        check(
+            mm::has_flag(data_flags.value(), mm::PageFlags::NoExecute), ".data is not executable");
     }
 
     // The direct map must never be executable: nothing should be able to jump
@@ -351,9 +355,11 @@ void test_scheduler()
         check(s_test_queue.waiter_count() == 1, "the wait queue knows about its waiter");
 
         s_test_queue.wake_all();
-        for (u32 attempts = 0; attempts < 100 && !__atomic_load_n(&s_waiter_woke, __ATOMIC_ACQUIRE); ++attempts)
+        for (u32 attempts = 0; attempts < 100 && !__atomic_load_n(&s_waiter_woke, __ATOMIC_ACQUIRE);
+             ++attempts)
             Scheduler::sleep_ms(4);
-        check(__atomic_load_n(&s_waiter_woke, __ATOMIC_ACQUIRE), "waking a wait queue releases the waiter");
+        check(__atomic_load_n(&s_waiter_woke, __ATOMIC_ACQUIRE),
+            "waking a wait queue releases the waiter");
     }
 
     // Exited threads are reaped by the idle thread, so the count comes back
@@ -588,12 +594,16 @@ void test_modules()
         check(keyboard.value()->type() == fs::InodeType::CharacterDevice,
             "/dev/kbd0 is a character device");
 
+    // The next two checks deliberately feed the loader bad images. It is
+    // supposed to complain loudly about those, which in a boot log looks like
+    // something went wrong, so quieten it for the duration.
+    console_set_min_level(static_cast<LogLevel>(LOG_ERROR + 1));
+
     // Loading a bogus image must be refused rather than jumped into.
     u8 garbage[128];
     memset(garbage, 0xCC, sizeof(garbage));
     auto rejected = ModuleLoader::load("garbage.ko", garbage, sizeof(garbage));
-    check(rejected.is_error() && rejected.error().code() == ENOEXEC,
-        "a non-ELF image is rejected");
+    check(rejected.is_error() && rejected.error().code() == ENOEXEC, "a non-ELF image is rejected");
 
     // An ELF header that is valid but the wrong type must also be refused.
     u8 wrong_type[sizeof(elf::Elf64_Ehdr)] = {};
@@ -608,6 +618,8 @@ void test_modules()
     header->e_type = elf::ET_EXEC;
     auto wrong = ModuleLoader::load("executable.ko", wrong_type, sizeof(wrong_type));
     check(wrong.is_error(), "an ET_EXEC image is rejected as a module");
+
+    console_set_min_level(LOG_DEBUG);
 }
 
 } // namespace
@@ -622,7 +634,8 @@ void run_module_selftests()
     if (s_checks_failed == 0) {
         klog(LOG_INFO, "selftest", "%zu module checks passed", s_checks_run);
     } else {
-        klog(LOG_ERROR, "selftest", "%zu of %zu module checks FAILED", s_checks_failed, s_checks_run);
+        klog(LOG_ERROR, "selftest", "%zu of %zu module checks FAILED", s_checks_failed,
+            s_checks_run);
         panic("module self tests failed");
     }
 }
@@ -639,7 +652,8 @@ void run_filesystem_selftests()
     if (s_checks_failed == 0) {
         klog(LOG_INFO, "selftest", "%zu filesystem checks passed", s_checks_run);
     } else {
-        klog(LOG_ERROR, "selftest", "%zu of %zu filesystem checks FAILED", s_checks_failed, s_checks_run);
+        klog(LOG_ERROR, "selftest", "%zu of %zu filesystem checks FAILED", s_checks_failed,
+            s_checks_run);
         panic("filesystem self tests failed");
     }
 }
@@ -654,7 +668,8 @@ void run_scheduler_selftests()
     if (s_checks_failed == 0) {
         klog(LOG_INFO, "selftest", "%zu scheduler checks passed", s_checks_run);
     } else {
-        klog(LOG_ERROR, "selftest", "%zu of %zu scheduler checks FAILED", s_checks_failed, s_checks_run);
+        klog(LOG_ERROR, "selftest", "%zu of %zu scheduler checks FAILED", s_checks_failed,
+            s_checks_run);
         panic("scheduler self tests failed");
     }
 }

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <kernel/arch/x86_64/interrupts.h>
+
 #include <shitos/types.h>
 
 namespace kernel::arch {

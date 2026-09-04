@@ -10,21 +10,31 @@
 #pragma once
 
 #include <kernel/lib/kstd.h>
+
 #include <shitos/types.h>
 
 namespace kernel {
 
-inline void cpu_relax() { asm volatile("pause" ::: "memory"); }
+inline void cpu_relax()
+{
+    asm volatile("pause" ::: "memory");
+}
 
 inline bool interrupts_enabled()
 {
     u64 flags;
-    asm volatile("pushfq; popq %0" : "=r"(flags) :: "memory");
+    asm volatile("pushfq; popq %0" : "=r"(flags)::"memory");
     return (flags & (1 << 9)) != 0;
 }
 
-inline void interrupts_disable() { asm volatile("cli" ::: "memory"); }
-inline void interrupts_enable() { asm volatile("sti" ::: "memory"); }
+inline void interrupts_disable()
+{
+    asm volatile("cli" ::: "memory");
+}
+inline void interrupts_enable()
+{
+    asm volatile("sti" ::: "memory");
+}
 
 // Restores the previous interrupt state on scope exit rather than blindly
 // re-enabling, so nesting these is safe.

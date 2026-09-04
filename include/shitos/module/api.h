@@ -27,7 +27,7 @@
 #include <shitos/types.h>
 
 #ifndef __cplusplus
-#    include <stdbool.h>
+#include <stdbool.h>
 #endif
 
 #ifdef __cplusplus
@@ -170,17 +170,16 @@ typedef struct ModuleDescriptor {
  *   SHITOS_MODULE("ps2kbd", "PS/2 keyboard", "icxd", "GPL-3.0-or-later",
  *                 module_init, module_fini);
  */
-#define SHITOS_MODULE(mod_name, mod_desc, mod_author, mod_license, init_fn, fini_fn) \
-    __attribute__((used, visibility("default")))                                     \
-    const ModuleDescriptor shitos_module = {                                         \
-        .abi_version = SHITOS_MODULE_ABI_VERSION,                                    \
-        ._reserved = 0,                                                              \
-        .name = (mod_name),                                                          \
-        .description = (mod_desc),                                                   \
-        .author = (mod_author),                                                      \
-        .license = (mod_license),                                                    \
-        .init = (init_fn),                                                           \
-        .fini = (fini_fn),                                                           \
+#define SHITOS_MODULE(mod_name, mod_desc, mod_author, mod_license, init_fn, fini_fn)               \
+    __attribute__((used, visibility("default"))) const ModuleDescriptor shitos_module = {          \
+        .abi_version = SHITOS_MODULE_ABI_VERSION,                                                  \
+        ._reserved = 0,                                                                            \
+        .name = (mod_name),                                                                        \
+        .description = (mod_desc),                                                                 \
+        .author = (mod_author),                                                                    \
+        .license = (mod_license),                                                                  \
+        .init = (init_fn),                                                                         \
+        .fini = (fini_fn),                                                                         \
     }
 
 #ifdef __cplusplus

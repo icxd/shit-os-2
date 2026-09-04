@@ -23,7 +23,7 @@ typedef long clock_t;
 typedef long suseconds_t;
 
 #ifndef NULL
-#    define NULL ((void*)0)
+#define NULL ((void*)0)
 #endif
 
 #endif /* _SYS_TYPES_H */

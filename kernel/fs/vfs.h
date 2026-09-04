@@ -16,6 +16,7 @@
 
 #include <kernel/lib/error.h>
 #include <kernel/lib/vector.h>
+
 #include <shitos/abi/dirent.h>
 #include <shitos/abi/fcntl.h>
 #include <shitos/abi/stat.h>
@@ -153,7 +154,8 @@ ErrorOr<Inode*> resolve(char const* path, Inode* base = nullptr);
 
 // Resolves everything but the last component, and hands back the parent
 // directory plus that final name. Used by create, mkdir and unlink.
-ErrorOr<Inode*> resolve_parent(char const* path, Inode* base, char (&final_component)[FILENAME_MAX_LENGTH]);
+ErrorOr<Inode*> resolve_parent(
+    char const* path, Inode* base, char (&final_component)[FILENAME_MAX_LENGTH]);
 
 ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* base = nullptr);
 

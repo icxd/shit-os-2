@@ -29,15 +29,30 @@ inline u32 inl(u16 port)
     return value;
 }
 
-inline void outb(u16 port, u8 value) { asm volatile("outb %0, %1" ::"a"(value), "Nd"(port) : "memory"); }
-inline void outw(u16 port, u16 value) { asm volatile("outw %0, %1" ::"a"(value), "Nd"(port) : "memory"); }
-inline void outl(u16 port, u32 value) { asm volatile("outl %0, %1" ::"a"(value), "Nd"(port) : "memory"); }
+inline void outb(u16 port, u8 value)
+{
+    asm volatile("outb %0, %1" ::"a"(value), "Nd"(port) : "memory");
+}
+inline void outw(u16 port, u16 value)
+{
+    asm volatile("outw %0, %1" ::"a"(value), "Nd"(port) : "memory");
+}
+inline void outl(u16 port, u32 value)
+{
+    asm volatile("outl %0, %1" ::"a"(value), "Nd"(port) : "memory");
+}
 
 // A write to an unused port; the bus cycle is the delay. Needed between back
 // to back writes to slow devices like the legacy PIC.
-inline void io_wait() { outb(0x80, 0); }
+inline void io_wait()
+{
+    outb(0x80, 0);
+}
 
-inline void halt() { asm volatile("hlt"); }
+inline void halt()
+{
+    asm volatile("hlt");
+}
 
 [[noreturn]] inline void halt_forever()
 {
@@ -55,7 +70,8 @@ inline u64 read_msr(u32 msr)
 
 inline void write_msr(u32 msr, u64 value)
 {
-    asm volatile("wrmsr" ::"c"(msr), "a"(static_cast<u32>(value)), "d"(static_cast<u32>(value >> 32)));
+    asm volatile(
+        "wrmsr" ::"c"(msr), "a"(static_cast<u32>(value)), "d"(static_cast<u32>(value >> 32)));
 }
 
 inline u64 read_cr2()
@@ -72,8 +88,14 @@ inline u64 read_cr3()
     return value;
 }
 
-inline void write_cr3(u64 value) { asm volatile("movq %0, %%cr3" ::"r"(value) : "memory"); }
+inline void write_cr3(u64 value)
+{
+    asm volatile("movq %0, %%cr3" ::"r"(value) : "memory");
+}
 
-inline void invlpg(u64 address) { asm volatile("invlpg (%0)" ::"r"(address) : "memory"); }
+inline void invlpg(u64 address)
+{
+    asm volatile("invlpg (%0)" ::"r"(address) : "memory");
+}
 
 } // namespace kernel::arch

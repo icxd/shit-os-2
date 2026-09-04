@@ -38,13 +38,31 @@ static_assert(sizeof(usize) == 8, "shit os 2 is 64-bit only");
 enum class PhysAddr : u64 {};
 enum class VirtAddr : u64 {};
 
-constexpr u64 raw(PhysAddr a) { return static_cast<u64>(a); }
-constexpr u64 raw(VirtAddr a) { return static_cast<u64>(a); }
+constexpr u64 raw(PhysAddr a)
+{
+    return static_cast<u64>(a);
+}
+constexpr u64 raw(VirtAddr a)
+{
+    return static_cast<u64>(a);
+}
 
-constexpr PhysAddr phys(u64 v) { return static_cast<PhysAddr>(v); }
-constexpr VirtAddr virt(u64 v) { return static_cast<VirtAddr>(v); }
+constexpr PhysAddr phys(u64 v)
+{
+    return static_cast<PhysAddr>(v);
+}
+constexpr VirtAddr virt(u64 v)
+{
+    return static_cast<VirtAddr>(v);
+}
 
-constexpr PhysAddr operator+(PhysAddr a, u64 n) { return phys(raw(a) + n); }
-constexpr VirtAddr operator+(VirtAddr a, u64 n) { return virt(raw(a) + n); }
+constexpr PhysAddr operator+(PhysAddr a, u64 n)
+{
+    return phys(raw(a) + n);
+}
+constexpr VirtAddr operator+(VirtAddr a, u64 n)
+{
+    return virt(raw(a) + n);
+}
 
 #endif /* __cplusplus */

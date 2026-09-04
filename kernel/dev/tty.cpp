@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // shit os 2 -- the terminal.
 
-#include <kernel/dev/console.h>
 #include <kernel/arch/x86_64/serial.h>
+#include <kernel/dev/console.h>
 #include <kernel/dev/framebuffer.h>
 #include <kernel/dev/tty.h>
 #include <kernel/fs/devfs.h>
@@ -12,6 +12,7 @@
 #include <kernel/mm/heap.h>
 #include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
+
 #include <shitos/abi/signal.h>
 
 namespace kernel::dev {
@@ -20,7 +21,7 @@ namespace {
 
 Tty s_tty;
 
-isize tty_device_read(void* self, void* buffer, usize length, u64) 
+isize tty_device_read(void* self, void* buffer, usize length, u64)
 {
     return static_cast<Tty*>(self)->read(buffer, length);
 }
@@ -35,7 +36,10 @@ int tty_device_ioctl(void* self, u32 request, void* argument)
     return static_cast<Tty*>(self)->ioctl(request, argument);
 }
 
-bool tty_device_poll(void* self) { return static_cast<Tty*>(self)->has_line_ready(); }
+bool tty_device_poll(void* self)
+{
+    return static_cast<Tty*>(self)->has_line_ready();
+}
 
 constexpr DeviceOps TTY_OPS {
     tty_device_read,
@@ -46,7 +50,10 @@ constexpr DeviceOps TTY_OPS {
 
 } // namespace
 
-Tty& Tty::the() { return s_tty; }
+Tty& Tty::the()
+{
+    return s_tty;
+}
 
 ErrorOr<void> Tty::initialize()
 {
@@ -55,11 +62,11 @@ ErrorOr<void> Tty::initialize()
     tty.m_termios.c_iflag = ICRNL;
     tty.m_termios.c_oflag = OPOST | ONLCR;
     tty.m_termios.c_lflag = ISIG | ICANON | ECHO;
-    tty.m_termios.c_cc[VINTR] = 3;   // ^C
-    tty.m_termios.c_cc[VQUIT] = 28;  // ctrl-backslash
-    tty.m_termios.c_cc[VERASE] = 8;  // backspace
-    tty.m_termios.c_cc[VKILL] = 21;  // ^U
-    tty.m_termios.c_cc[VEOF] = 4;    // ^D
+    tty.m_termios.c_cc[VINTR] = 3; // ^C
+    tty.m_termios.c_cc[VQUIT] = 28; // ctrl-backslash
+    tty.m_termios.c_cc[VERASE] = 8; // backspace
+    tty.m_termios.c_cc[VKILL] = 21; // ^U
+    tty.m_termios.c_cc[VEOF] = 4; // ^D
 
     // The keyboard is whatever registered /dev/kbd0. If no keyboard module
     // loaded, the terminal is output-only rather than broken.
@@ -193,7 +200,10 @@ void Tty::process_input_character(char c)
     }
 }
 
-bool Tty::has_line_ready() const { return m_ready_head != m_ready_tail || m_saw_eof; }
+bool Tty::has_line_ready() const
+{
+    return m_ready_head != m_ready_tail || m_saw_eof;
+}
 
 isize Tty::read(void* buffer, usize length)
 {
@@ -268,8 +278,7 @@ int Tty::ioctl(u32 request, void* argument)
         size->ws_ypixel = 0;
         return 0;
     }
-    default:
-        return -ENOTTY;
+    default: return -ENOTTY;
     }
 }
 

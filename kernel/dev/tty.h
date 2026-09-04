@@ -14,6 +14,7 @@
 #include <kernel/fs/vfs.h>
 #include <kernel/lib/error.h>
 #include <kernel/sched/waitqueue.h>
+
 #include <shitos/abi/termios.h>
 #include <shitos/module/api.h>
 
@@ -43,7 +44,7 @@ private:
     void process_input_character(char c);
     void echo(char c);
 
-    struct termios m_termios {};
+    struct termios m_termios { };
 
     char m_line[TTY_LINE_BUFFER_SIZE] {};
     usize m_line_length { 0 };

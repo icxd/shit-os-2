@@ -46,9 +46,18 @@ __attribute__((noreturn)) void api_panic(char const* format, ...)
     panic("module requested a panic");
 }
 
-void* api_kmalloc(usize size) { return kmalloc(size); }
-void* api_kzalloc(usize size) { return kzalloc(size); }
-void api_kfree(void* pointer) { kfree(pointer); }
+void* api_kmalloc(usize size)
+{
+    return kmalloc(size);
+}
+void* api_kzalloc(usize size)
+{
+    return kzalloc(size);
+}
+void api_kfree(void* pointer)
+{
+    kfree(pointer);
+}
 
 void* api_map_mmio(u64 physical, usize length)
 {
@@ -56,21 +65,45 @@ void* api_map_mmio(u64 physical, usize length)
     return result.is_error() ? nullptr : result.value();
 }
 
-void api_unmap_mmio(void* address, usize length) { mm::unmap_mmio(address, length); }
+void api_unmap_mmio(void* address, usize length)
+{
+    mm::unmap_mmio(address, length);
+}
 
-u8 api_inb(u16 port) { return arch::inb(port); }
-u16 api_inw(u16 port) { return arch::inw(port); }
-u32 api_inl(u16 port) { return arch::inl(port); }
-void api_outb(u16 port, u8 value) { arch::outb(port, value); }
-void api_outw(u16 port, u16 value) { arch::outw(port, value); }
-void api_outl(u16 port, u32 value) { arch::outl(port, value); }
+u8 api_inb(u16 port)
+{
+    return arch::inb(port);
+}
+u16 api_inw(u16 port)
+{
+    return arch::inw(port);
+}
+u32 api_inl(u16 port)
+{
+    return arch::inl(port);
+}
+void api_outb(u16 port, u8 value)
+{
+    arch::outb(port, value);
+}
+void api_outw(u16 port, u16 value)
+{
+    arch::outw(port, value);
+}
+void api_outl(u16 port, u32 value)
+{
+    arch::outl(port, value);
+}
 
 ModuleResult api_irq_register(u8 irq, IrqHandler handler, void* self)
 {
     return arch::register_irq_handler(irq, handler, self);
 }
 
-void api_irq_unregister(u8 irq, void* self) { arch::unregister_irq_handler(irq, self); }
+void api_irq_unregister(u8 irq, void* self)
+{
+    arch::unregister_irq_handler(irq, self);
+}
 
 ModuleResult api_device_register(DeviceDescriptor const* device)
 {
@@ -124,9 +157,18 @@ void api_waitqueue_wake_all(::WaitQueue* queue)
     reinterpret_cast<kernel::WaitQueue*>(queue)->wake_all();
 }
 
-u64 api_uptime_ms() { return Scheduler::uptime_ms(); }
-void api_sleep_ms(u64 milliseconds) { Scheduler::sleep_ms(milliseconds); }
-void api_yield() { Scheduler::yield(); }
+u64 api_uptime_ms()
+{
+    return Scheduler::uptime_ms();
+}
+void api_sleep_ms(u64 milliseconds)
+{
+    Scheduler::sleep_ms(milliseconds);
+}
+void api_yield()
+{
+    Scheduler::yield();
+}
 
 constinit KernelApi const s_kernel_api = {
     .abi_version = SHITOS_MODULE_ABI_VERSION,
@@ -167,6 +209,9 @@ constinit KernelApi const s_kernel_api = {
 
 } // namespace
 
-KernelApi const& ModuleLoader::kernel_api() { return s_kernel_api; }
+KernelApi const& ModuleLoader::kernel_api()
+{
+    return s_kernel_api;
+}
 
 } // namespace kernel

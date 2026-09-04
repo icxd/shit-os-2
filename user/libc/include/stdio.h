@@ -41,7 +41,8 @@ int fileno(FILE* stream);
 int printf(const char* format, ...) __attribute__((format(printf, 1, 2)));
 int fprintf(FILE* stream, const char* format, ...) __attribute__((format(printf, 2, 3)));
 int sprintf(char* buffer, const char* format, ...) __attribute__((format(printf, 2, 3)));
-int snprintf(char* buffer, size_t size, const char* format, ...) __attribute__((format(printf, 3, 4)));
+int snprintf(char* buffer, size_t size, const char* format, ...)
+    __attribute__((format(printf, 3, 4)));
 int vprintf(const char* format, va_list args);
 int vfprintf(FILE* stream, const char* format, va_list args);
 int vsnprintf(char* buffer, size_t size, const char* format, va_list args);

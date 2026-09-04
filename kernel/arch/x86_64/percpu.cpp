@@ -42,7 +42,13 @@ void percpu_initialize_bootstrap()
     klog(LOG_INFO, "cpu", "per-cpu block for cpu 0 at %p", &s_cpus[0]);
 }
 
-usize cpu_count() { return s_cpu_count; }
-Cpu& cpu_by_index(usize index) { return s_cpus[index < MAX_CPUS ? index : 0]; }
+usize cpu_count()
+{
+    return s_cpu_count;
+}
+Cpu& cpu_by_index(usize index)
+{
+    return s_cpus[index < MAX_CPUS ? index : 0];
+}
 
 } // namespace kernel::arch

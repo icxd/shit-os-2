@@ -11,6 +11,7 @@
 
 #include <kernel/fs/vfs.h>
 #include <kernel/lib/vector.h>
+
 #include <shitos/module/api.h>
 
 namespace kernel::fs {

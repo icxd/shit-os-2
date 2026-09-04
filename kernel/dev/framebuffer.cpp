@@ -130,7 +130,8 @@ void FramebufferConsole::put_glyph(char c, u32 column, u32 row)
         u8 const bits = glyph[gy];
         for (u32 gx = 0; gx < FONT_WIDTH; ++gx) {
             bool const lit = (bits & (0x80 >> gx)) != 0;
-            draw_pixel(origin_x + gx, origin_y + gy, lit ? m_packed_foreground : m_packed_background);
+            draw_pixel(
+                origin_x + gx, origin_y + gy, lit ? m_packed_foreground : m_packed_background);
         }
     }
 }
@@ -180,15 +181,9 @@ void FramebufferConsole::write_char(char c)
         return;
 
     switch (c) {
-    case '\n':
-        newline();
-        return;
-    case '\r':
-        m_cursor_column = 0;
-        return;
-    case '\t':
-        do {
-            write_char(' ');
+    case '\n': newline(); return;
+    case '\r': m_cursor_column = 0; return;
+    case '\t': do { write_char(' ');
         } while (m_cursor_column % 8 != 0);
         return;
     case '\b':
@@ -203,8 +198,7 @@ void FramebufferConsole::write_char(char c)
             }
         }
         return;
-    default:
-        break;
+    default: break;
     }
 
     if (m_format == boot::FramebufferFormat::EgaText) {
@@ -217,8 +211,14 @@ void FramebufferConsole::write_char(char c)
     advance_cursor();
 }
 
-FramebufferConsole& framebuffer_console() { return s_console; }
+FramebufferConsole& framebuffer_console()
+{
+    return s_console;
+}
 
-bool framebuffer_initialize() { return s_console.initialize(boot::boot_info().framebuffer); }
+bool framebuffer_initialize()
+{
+    return s_console.initialize(boot::boot_info().framebuffer);
+}
 
 } // namespace kernel::dev

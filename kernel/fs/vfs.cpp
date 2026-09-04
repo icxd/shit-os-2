@@ -16,7 +16,7 @@ namespace {
 constexpr usize MAX_MOUNTS = 8;
 
 struct MountEntry {
-    Inode* covered;        // the directory this filesystem is mounted over
+    Inode* covered; // the directory this filesystem is mounted over
     FileSystem* filesystem;
     char path[FILENAME_MAX_LENGTH];
 };
@@ -61,18 +61,12 @@ bool next_component(char const*& path, char (&out)[FILENAME_MAX_LENGTH])
 u32 mode_bits_for(InodeType type)
 {
     switch (type) {
-    case InodeType::Regular:
-        return S_IFREG;
-    case InodeType::Directory:
-        return S_IFDIR;
-    case InodeType::CharacterDevice:
-        return S_IFCHR;
-    case InodeType::BlockDevice:
-        return S_IFBLK;
-    case InodeType::Fifo:
-        return S_IFIFO;
-    case InodeType::SymbolicLink:
-        return S_IFLNK;
+    case InodeType::Regular: return S_IFREG;
+    case InodeType::Directory: return S_IFDIR;
+    case InodeType::CharacterDevice: return S_IFCHR;
+    case InodeType::BlockDevice: return S_IFBLK;
+    case InodeType::Fifo: return S_IFIFO;
+    case InodeType::SymbolicLink: return S_IFLNK;
     }
     return 0;
 }
@@ -80,18 +74,12 @@ u32 mode_bits_for(InodeType type)
 u8 dirent_type_for(InodeType type)
 {
     switch (type) {
-    case InodeType::Regular:
-        return DT_REG;
-    case InodeType::Directory:
-        return DT_DIR;
-    case InodeType::CharacterDevice:
-        return DT_CHR;
-    case InodeType::BlockDevice:
-        return DT_BLK;
-    case InodeType::Fifo:
-        return DT_FIFO;
-    case InodeType::SymbolicLink:
-        return DT_LNK;
+    case InodeType::Regular: return DT_REG;
+    case InodeType::Directory: return DT_DIR;
+    case InodeType::CharacterDevice: return DT_CHR;
+    case InodeType::BlockDevice: return DT_BLK;
+    case InodeType::Fifo: return DT_FIFO;
+    case InodeType::SymbolicLink: return DT_LNK;
     }
     return DT_UNKNOWN;
 }
@@ -102,14 +90,38 @@ u8 dirent_type_for(InodeType type)
 // operation on that kind of object, so a filesystem only implements what it
 // genuinely supports and unsupported operations are correct rather than absent.
 
-ErrorOr<usize> Inode::read(u64, void*, usize) { return Error::from_errno(EINVAL); }
-ErrorOr<usize> Inode::write(u64, void const*, usize) { return Error::from_errno(EROFS); }
-ErrorOr<void> Inode::truncate(u64) { return Error::from_errno(EROFS); }
-ErrorOr<Inode*> Inode::lookup(char const*) { return Error::from_errno(ENOTDIR); }
-ErrorOr<bool> Inode::read_directory(usize, DirectoryEntry&) { return Error::from_errno(ENOTDIR); }
-ErrorOr<Inode*> Inode::create(char const*, InodeType, u32) { return Error::from_errno(EROFS); }
-ErrorOr<void> Inode::unlink(char const*) { return Error::from_errno(EROFS); }
-ErrorOr<int> Inode::ioctl(u32, void*) { return Error::from_errno(ENOTTY); }
+ErrorOr<usize> Inode::read(u64, void*, usize)
+{
+    return Error::from_errno(EINVAL);
+}
+ErrorOr<usize> Inode::write(u64, void const*, usize)
+{
+    return Error::from_errno(EROFS);
+}
+ErrorOr<void> Inode::truncate(u64)
+{
+    return Error::from_errno(EROFS);
+}
+ErrorOr<Inode*> Inode::lookup(char const*)
+{
+    return Error::from_errno(ENOTDIR);
+}
+ErrorOr<bool> Inode::read_directory(usize, DirectoryEntry&)
+{
+    return Error::from_errno(ENOTDIR);
+}
+ErrorOr<Inode*> Inode::create(char const*, InodeType, u32)
+{
+    return Error::from_errno(EROFS);
+}
+ErrorOr<void> Inode::unlink(char const*)
+{
+    return Error::from_errno(EROFS);
+}
+ErrorOr<int> Inode::ioctl(u32, void*)
+{
+    return Error::from_errno(ENOTTY);
+}
 
 ErrorOr<void> Inode::stat(struct stat& out) const
 {
@@ -158,17 +170,10 @@ ErrorOr<u64> FileDescription::seek(i64 offset, int whence)
 {
     i64 base = 0;
     switch (whence) {
-    case SEEK_SET:
-        base = 0;
-        break;
-    case SEEK_CUR:
-        base = static_cast<i64>(m_offset);
-        break;
-    case SEEK_END:
-        base = static_cast<i64>(m_inode->size());
-        break;
-    default:
-        return Error::from_errno(EINVAL);
+    case SEEK_SET: base = 0; break;
+    case SEEK_CUR: base = static_cast<i64>(m_offset); break;
+    case SEEK_END: base = static_cast<i64>(m_inode->size()); break;
+    default: return Error::from_errno(EINVAL);
     }
 
     i64 const target = base + offset;
@@ -281,7 +286,10 @@ Inode* root_inode()
     return &s_root_filesystem->root();
 }
 
-usize mount_count() { return s_mount_count; }
+usize mount_count()
+{
+    return s_mount_count;
+}
 
 MountInfo const& mount_at(usize index)
 {
@@ -331,7 +339,8 @@ ErrorOr<Inode*> resolve(char const* path, Inode* base)
     return current;
 }
 
-ErrorOr<Inode*> resolve_parent(char const* path, Inode* base, char (&final_component)[FILENAME_MAX_LENGTH])
+ErrorOr<Inode*> resolve_parent(
+    char const* path, Inode* base, char (&final_component)[FILENAME_MAX_LENGTH])
 {
     if (path == nullptr)
         return Error::from_errno(EINVAL);
@@ -351,7 +360,8 @@ ErrorOr<Inode*> resolve_parent(char const* path, Inode* base, char (&final_compo
     }
 
     char directory[PATH_MAX_LENGTH];
-    usize const directory_length = min<usize>(static_cast<usize>(last_slash - path), PATH_MAX_LENGTH - 1);
+    usize const directory_length
+        = min<usize>(static_cast<usize>(last_slash - path), PATH_MAX_LENGTH - 1);
     memcpy(directory, path, directory_length);
     directory[directory_length] = '\0';
 

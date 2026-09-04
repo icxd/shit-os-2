@@ -4,6 +4,7 @@
 #pragma once
 
 #include <kernel/dev/console.h>
+
 #include <shitos/types.h>
 
 namespace kernel::arch {

@@ -20,17 +20,12 @@ BootInfo s_boot_info;
 MemoryKind kind_from_multiboot(u32 type)
 {
     switch (static_cast<MmapEntryType>(type)) {
-    case MmapEntryType::Available:
-        return MemoryKind::Usable;
-    case MmapEntryType::AcpiReclaimable:
-        return MemoryKind::AcpiReclaimable;
-    case MmapEntryType::AcpiNvs:
-        return MemoryKind::AcpiNvs;
-    case MmapEntryType::BadRam:
-        return MemoryKind::Bad;
+    case MmapEntryType::Available: return MemoryKind::Usable;
+    case MmapEntryType::AcpiReclaimable: return MemoryKind::AcpiReclaimable;
+    case MmapEntryType::AcpiNvs: return MemoryKind::AcpiNvs;
+    case MmapEntryType::BadRam: return MemoryKind::Bad;
     case MmapEntryType::Reserved:
-    default:
-        return MemoryKind::Reserved;
+    default: return MemoryKind::Reserved;
     }
 }
 
@@ -46,7 +41,10 @@ void add_region(BootInfo& info, u64 base, u64 length, MemoryKind kind)
 
 } // namespace
 
-BootInfo& boot_info() { return s_boot_info; }
+BootInfo& boot_info()
+{
+    return s_boot_info;
+}
 
 bool parse_multiboot2(u32 magic, u64 info_phys, BootInfo& out)
 {
@@ -113,9 +111,7 @@ bool parse_multiboot2(u32 magic, u64 info_phys, BootInfo& out)
                 info.blue_shift = fb->blue_field_position;
                 info.blue_bits = fb->blue_mask_size;
                 break;
-            case FramebufferKind::EgaText:
-                info.format = FramebufferFormat::EgaText;
-                break;
+            case FramebufferKind::EgaText: info.format = FramebufferFormat::EgaText; break;
             case FramebufferKind::Indexed:
             default:
                 // We do not do palettes. Fall back to serial only.
@@ -127,12 +123,11 @@ bool parse_multiboot2(u32 magic, u64 info_phys, BootInfo& out)
 
         case TagType::AcpiOld:
         case TagType::AcpiNew:
-            out.rsdp_phys = reinterpret_cast<u64>(reinterpret_cast<AcpiTag const*>(&tag)->rsdp)
-                - HHDM_BASE;
+            out.rsdp_phys
+                = reinterpret_cast<u64>(reinterpret_cast<AcpiTag const*>(&tag)->rsdp) - HHDM_BASE;
             break;
 
-        default:
-            break;
+        default: break;
         }
     }
 

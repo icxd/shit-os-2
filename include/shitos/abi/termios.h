@@ -27,16 +27,16 @@ struct termios {
 };
 
 /* c_lflag */
-#define ISIG 0x0001   /* ^C and friends raise signals */
+#define ISIG 0x0001 /* ^C and friends raise signals */
 #define ICANON 0x0002 /* line-buffered with editing */
-#define ECHO 0x0008   /* echo input back to the terminal */
+#define ECHO 0x0008 /* echo input back to the terminal */
 
 /* c_iflag */
 #define ICRNL 0x0100 /* translate CR to NL on input */
 
 /* c_oflag */
-#define OPOST 0x0001  /* enable output processing */
-#define ONLCR 0x0004  /* translate NL to CRNL on output */
+#define OPOST 0x0001 /* enable output processing */
+#define ONLCR 0x0004 /* translate NL to CRNL on output */
 
 /* c_cc indices */
 #define VINTR 0
