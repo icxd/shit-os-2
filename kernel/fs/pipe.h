@@ -34,6 +34,10 @@ private:
     PipeInode()
         : Inode(nullptr, InodeType::Fifo, 0600)
     {
+        // A pipe has no name, so nothing holds the directory reference an
+        // ordinary inode starts with. Its two descriptions are its whole
+        // lifetime.
+        drop_initial_link_reference();
     }
 
     usize used() const;

@@ -82,9 +82,13 @@ ErrorOr<Process*> Process::create(char const* name, Process* parent)
     process->m_parent_pid = parent != nullptr ? parent->m_pid : 0;
     strncpy(process->m_name, name, PROCESS_NAME_MAX - 1);
 
-    // Inherit the parent's working directory, or start at the root.
+    // Inherit the parent's working directory, or start at the root. Holding
+    // a pointer to it means holding a reference: a directory can be removed
+    // while a process is sitting in it.
     process->m_working_directory
         = parent != nullptr ? parent->m_working_directory : fs::root_inode();
+    if (process->m_working_directory != nullptr)
+        process->m_working_directory->ref();
 
     {
         InterruptLockGuard guard(s_process_lock);
@@ -97,10 +101,27 @@ ErrorOr<Process*> Process::create(char const* name, Process* parent)
 Process::~Process()
 {
     close_all_descriptors();
+
+    if (m_working_directory != nullptr) {
+        m_working_directory->unref();
+        m_working_directory = nullptr;
+    }
+
     if (m_address_space != nullptr && m_address_space != &mm::AddressSpace::kernel_space()) {
         m_address_space->destroy_user_mappings();
         kfree(m_address_space);
     }
+}
+
+void Process::set_working_directory(fs::Inode* inode)
+{
+    // Reference the new one before releasing the old, in case they are the
+    // same inode and the release would otherwise be the last one.
+    if (inode != nullptr)
+        inode->ref();
+    if (m_working_directory != nullptr)
+        m_working_directory->unref();
+    m_working_directory = inode;
 }
 
 void Process::set_name(char const* name)
@@ -151,12 +172,9 @@ ErrorOr<void> Process::close_descriptor(int fd)
     m_descriptors[fd] = {};
 
     // Descriptions are shared by dup() and across fork(), so only the last
-    // reference actually closes the file.
-    if (description->unref()) {
-        description->inode().on_description_closed(description->flags());
-        description->~FileDescription();
-        kfree(description);
-    }
+    // reference actually closes the file -- and only that close lets go of
+    // the inode.
+    fs::release_description(description);
     return {};
 }
 

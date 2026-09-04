@@ -188,7 +188,10 @@ ErrorOr<UstarInode*> UstarFileSystem::ensure_path(char const* path, InodeType ty
             strncpy(child->m_name, component, FILENAME_MAX_LENGTH - 1);
             child->m_parent = current;
             child->m_inode_number = m_next_inode_number++;
-            TRY(current->m_children.append(child));
+            if (auto result = current->m_children.append(child); result.is_error()) {
+                child->unref();
+                return result.error();
+            }
         }
 
         if (is_last)

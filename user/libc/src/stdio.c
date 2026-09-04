@@ -1035,12 +1035,20 @@ FILE* tmpfile(void)
     tmpnam(name);
 
     /*
-     * The usual trick is to unlink immediately and let the open descriptor
-     * keep the file alive. Inodes here are not reference counted, so that
-     * would leave this stream pointing at freed memory. The file is left in
-     * /tmp instead, which is a tmpfs and does not outlive the boot.
+     * Create it, then remove the name straight away: the open descriptor
+     * keeps the inode alive, and nothing else can find or collide with the
+     * file. The kernel reference counts inodes, so this is safe -- before it
+     * did, the stream would have been left pointing at freed memory.
      */
-    return fopen(name, "w+");
+    FILE* stream = fopen(name, "w+");
+    if (stream == NULL)
+        return NULL;
+
+    if (remove(name) != 0) {
+        /* Nothing can be done about a name we cannot remove, and leaving a
+         * usable stream beats failing the call. */
+    }
+    return stream;
 }
 
 int remove(const char* path)

@@ -61,7 +61,7 @@ public:
     void set_address_space(mm::AddressSpace* space) { m_address_space = space; }
 
     fs::Inode* working_directory() const { return m_working_directory; }
-    void set_working_directory(fs::Inode* inode) { m_working_directory = inode; }
+    void set_working_directory(fs::Inode* inode);
 
     // --- file descriptors ---
     ErrorOr<int> allocate_descriptor(fs::FileDescription* description, int lowest = 0);

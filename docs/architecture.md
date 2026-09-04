@@ -164,9 +164,24 @@ is correct rather than absent.
 A regular file in the initrd does not copy its contents: the inode points
 straight into the pages GRUB loaded, which the physical allocator reserved.
 
-Inodes are owned by their filesystem and live as long as the mount. There is
-no cache eviction and no reference counting, which is fine for RAM-backed
-filesystems and will need revisiting when a disk driver arrives.
+Inodes are reference counted. A directory holds one reference to each child it
+names, an open `FileDescription` holds one, and so does anything else keeping a
+pointer for a while -- a process's working directory, a mount point, the TTY's
+keyboard. `unlink` drops the directory's reference and marks the inode
+unlinked, which severs its parent link; the memory goes back only when the
+count reaches zero. That is what POSIX promises about a file that is removed
+while it is open, and getting it wrong cost a use-after-free that leaked one
+file's contents into another's reader -- see `docs/roadmap.md`.
+
+There is still no cache eviction: a live inode stays in memory, which is fine
+when the inode *is* the file, and will need revisiting when a disk driver
+arrives.
+
+Two counts are in play and they are not the same one. A `FileDescription` is
+also counted, because `dup` and `fork` share one; three descriptors onto one
+description still hold the inode exactly once. `fs::release_description` is the
+single place the two meet, so the pairing lives in one function rather than at
+every call site that closes a file.
 
 ---
 

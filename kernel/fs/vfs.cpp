@@ -123,6 +123,21 @@ ErrorOr<int> Inode::ioctl(u32, void*)
     return Error::from_errno(ENOTTY);
 }
 
+void Inode::destroy()
+{
+    // The destructor is virtual, so this dispatches to the most derived one
+    // before the memory goes back to the heap.
+    this->~Inode();
+    kfree(this);
+}
+
+void Inode::unref()
+{
+    u32 const remaining = __atomic_sub_fetch(&m_reference_count, 1, __ATOMIC_ACQ_REL);
+    if (remaining == 0)
+        destroy();
+}
+
 ErrorOr<void> Inode::stat(struct stat& out) const
 {
     memset(&out, 0, sizeof(out));
@@ -267,6 +282,11 @@ ErrorOr<void> mount(char const* path, FileSystem* filesystem)
         if (s_mounts[i].covered == mount_point)
             return Error::from_errno(EBUSY);
     }
+
+    // The mount table outlives whatever named the directory, so it holds a
+    // reference of its own. There is no umount yet; when there is, it drops
+    // this one.
+    mount_point->ref();
 
     auto& entry = s_mounts[s_mount_count++];
     entry.covered = mount_point;
@@ -414,12 +434,30 @@ ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* bas
     if (description == nullptr)
         return Error::from_errno(ENOMEM);
     new (description) FileDescription(*inode, flags);
-    inode->on_description_opened(flags);
 
     if ((flags & O_APPEND) != 0)
         (void)description->seek(0, SEEK_END);
 
     return description;
+}
+
+void release_description(FileDescription* description)
+{
+    if (description == nullptr)
+        return;
+    if (!description->unref())
+        return;
+
+    // Last holder. Tell the inode the end is closing before letting go of it,
+    // because a pipe decides whether it has reached EOF from exactly that.
+    Inode& inode = description->inode();
+    int const flags = description->flags();
+
+    description->~FileDescription();
+    kfree(description);
+
+    inode.on_description_closed(flags);
+    inode.unref();
 }
 
 ErrorOr<usize> absolute_path_of(Inode& inode, char* buffer, usize capacity)
@@ -472,6 +510,12 @@ ErrorOr<usize> absolute_path_of(Inode& inode, char* buffer, usize capacity)
 
         current = parent;
     }
+
+    // Reaching anything but the root means the chain was cut -- an unlinked
+    // directory that a process is still sitting in. POSIX says getcwd fails
+    // with ENOENT there rather than inventing a path.
+    if (current != root)
+        return Error::from_errno(ENOENT);
 
     usize const length = PATH_MAX_LENGTH - position - 1;
     if (length + 1 > capacity)

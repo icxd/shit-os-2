@@ -40,6 +40,8 @@ ErrorOr<usize> DevfsInode::read(u64 offset, void* buffer, usize length)
 {
     if (m_type == InodeType::Directory)
         return Error::from_errno(EISDIR);
+    if (is_unlinked())
+        return Error::from_errno(ENODEV);
     if (m_ops == nullptr || m_ops->read == nullptr)
         return Error::from_errno(ENOTSUP);
 
@@ -53,6 +55,8 @@ ErrorOr<usize> DevfsInode::write(u64 offset, void const* buffer, usize length)
 {
     if (m_type == InodeType::Directory)
         return Error::from_errno(EISDIR);
+    if (is_unlinked())
+        return Error::from_errno(ENODEV);
     if (m_ops == nullptr || m_ops->write == nullptr)
         return Error::from_errno(ENOTSUP);
 
@@ -64,6 +68,8 @@ ErrorOr<usize> DevfsInode::write(u64 offset, void const* buffer, usize length)
 
 ErrorOr<int> DevfsInode::ioctl(u32 request, void* argument)
 {
+    if (is_unlinked())
+        return Error::from_errno(ENODEV);
     if (m_ops == nullptr || m_ops->ioctl == nullptr)
         return Error::from_errno(ENOTTY);
 
@@ -180,7 +186,7 @@ ErrorOr<void> DevfsFileSystem::register_device(DeviceDescriptor const& device)
     node->m_device_self = device.self;
 
     if (auto result = m_root->m_children.append(node); result.is_error()) {
-        kfree(node);
+        node->unref();
         return result.error();
     }
 
@@ -194,8 +200,15 @@ void DevfsFileSystem::unregister_device(char const* name)
         auto* child = m_root->m_children[i];
         if (strcmp(child->m_name, name) != 0)
             continue;
+        // A module unloading must not free a node a process still has open;
+        // the reference count keeps it alive until the last close. What it
+        // must not keep is the driver's ops table and instance pointer --
+        // those belong to the module and are about to be unmapped.
         m_root->m_children.remove_at(i);
-        kfree(child);
+        child->mark_unlinked();
+        child->m_ops = nullptr;
+        child->m_device_self = nullptr;
+        child->unref();
         klog(LOG_DEBUG, "devfs", "unregistered /dev/%s", name);
         return;
     }

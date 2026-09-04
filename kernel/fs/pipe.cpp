@@ -39,10 +39,11 @@ ErrorOr<void> PipeInode::create_pair(FileDescription*& read_end, FileDescription
         return Error::from_errno(ENOMEM);
     }
 
+    // Constructing a description takes a reference and reports the open, so
+    // the pipe goes from zero to two here and back to zero when both ends
+    // close.
     new (reader) FileDescription(*pipe, O_RDONLY);
     new (writer) FileDescription(*pipe, O_WRONLY);
-    pipe->on_description_opened(O_RDONLY);
-    pipe->on_description_opened(O_WRONLY);
 
     read_end = reader;
     write_end = writer;
@@ -71,11 +72,9 @@ void PipeInode::on_description_closed(int flags)
         m_read_queue.wake_all();
     }
 
-    // Nothing refers to this pipe any more.
-    if (m_readers == 0 && m_writers == 0) {
-        this->~PipeInode();
-        kfree(this);
-    }
+    // Destroying itself here would be a double free: release_description
+    // unrefs the inode straight after this returns, and that is what decides
+    // when the pipe goes away.
 }
 
 bool PipeInode::can_read_without_blocking() const

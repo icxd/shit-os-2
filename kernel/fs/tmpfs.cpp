@@ -11,10 +11,10 @@ namespace kernel::fs {
 TmpfsInode::~TmpfsInode()
 {
     kfree(m_data);
-    for (auto* child : m_children) {
-        child->~TmpfsInode();
-        kfree(child);
-    }
+    // Give back the reference this directory held on each child rather than
+    // destroying them: a child a process still has open outlives its parent.
+    for (auto* child : m_children)
+        child->unref();
 }
 
 ErrorOr<void> TmpfsInode::ensure_capacity(usize wanted)
@@ -152,8 +152,7 @@ ErrorOr<Inode*> TmpfsInode::create(char const* name, InodeType type, u32 mode)
     child->m_inode_number = static_cast<TmpfsFileSystem*>(m_filesystem)->allocate_inode_number();
 
     if (auto result = m_children.append(child); result.is_error()) {
-        child->~TmpfsInode();
-        kfree(child);
+        child->unref();
         return result.error();
     }
 
@@ -175,9 +174,12 @@ ErrorOr<void> TmpfsInode::unlink(char const* name)
         if (child->is_directory() && !child->m_children.is_empty())
             return Error::from_errno(ENOTEMPTY);
 
+        // Remove the name and drop the reference that went with it. If the
+        // file is still open somewhere it stays alive, unreachable by name,
+        // until the last descriptor closes.
         m_children.remove_at(i);
-        child->~TmpfsInode();
-        kfree(child);
+        child->mark_unlinked();
+        child->unref();
         return {};
     }
 

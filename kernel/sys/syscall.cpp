@@ -299,9 +299,7 @@ ErrorOr<u64> sys_open(InterruptFrame&, u64 path_pointer, u64 flags, u64 mode, u6
 
     auto fd = process->allocate_descriptor(description);
     if (fd.is_error()) {
-        description->inode().on_description_closed(description->flags());
-        description->~FileDescription();
-        kfree(description);
+        fs::release_description(description);
         return fd.error();
     }
 
@@ -530,16 +528,27 @@ ErrorOr<u64> sys_pipe(InterruptFrame&, u64 fds_pointer, u64, u64, u64, u64, u64)
 
     auto* process = Process::current();
     auto read_fd = process->allocate_descriptor(read_end);
-    if (read_fd.is_error())
+    if (read_fd.is_error()) {
+        fs::release_description(read_end);
+        fs::release_description(write_end);
         return read_fd.error();
+    }
     auto write_fd = process->allocate_descriptor(write_end);
     if (write_fd.is_error()) {
         (void)process->close_descriptor(read_fd.value());
+        fs::release_description(write_end);
         return write_fd.error();
     }
 
+    // Handing the numbers back can still fail, and a process that never
+    // learns its fds cannot close them. Undo the whole call rather than
+    // leaking a pipe into its table.
     int const fds[2] = { read_fd.value(), write_fd.value() };
-    TRY(copy_to_user(fds_pointer, fds, sizeof(fds)));
+    if (auto copied = copy_to_user(fds_pointer, fds, sizeof(fds)); copied.is_error()) {
+        (void)process->close_descriptor(read_fd.value());
+        (void)process->close_descriptor(write_fd.value());
+        return copied.error();
+    }
     return static_cast<u64>(0);
 }
 

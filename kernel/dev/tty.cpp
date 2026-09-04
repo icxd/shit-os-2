@@ -71,9 +71,13 @@ ErrorOr<void> Tty::initialize()
     // The keyboard is whatever registered /dev/kbd0. If no keyboard module
     // loaded, the terminal is output-only rather than broken.
     auto keyboard = fs::resolve("/dev/kbd0");
-    if (!keyboard.is_error())
+    if (!keyboard.is_error()) {
+        // Held for the lifetime of the system, so it takes a reference like
+        // any other long-lived holder: unloading the keyboard module must
+        // not free the node out from under a blocked read.
         tty.m_keyboard = keyboard.value();
-    else
+        tty.m_keyboard->ref();
+    } else
         klog(LOG_WARN, "tty", "no /dev/kbd0; the terminal will be output only");
 
     auto* devfs = fs::DevfsFileSystem::the();

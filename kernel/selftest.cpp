@@ -604,6 +604,78 @@ void test_tmpfs()
     }
 }
 
+void test_inode_lifetime()
+{
+    // The regression this whole change exists for: a file removed while it is
+    // still open used to be freed under its reader, and the next allocation
+    // of the same size handed the reader somebody else's bytes.
+    static constexpr char const CANARY[] = "CANARY-DATA-1234";
+    static constexpr usize CANARY_LENGTH = sizeof(CANARY) - 1;
+
+    auto writer = fs::open("/tmp/lifetime.txt", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(!writer.is_error(), "creating a file to unlink while open");
+    if (writer.is_error())
+        return;
+
+    check(!writer.value()->write(CANARY, CANARY_LENGTH).is_error(), "writing the canary");
+    fs::release_description(writer.value());
+
+    auto* inode = fs::resolve("/tmp/lifetime.txt").value();
+
+    // One reference: the directory entry naming it.
+    check(inode->reference_count() == 1, "a named, unopened inode has one reference");
+    check(!inode->is_unlinked(), "a named inode is not unlinked");
+
+    auto reader = fs::open("/tmp/lifetime.txt", O_RDONLY, 0);
+    check(!reader.is_error(), "opening the file");
+    if (reader.is_error())
+        return;
+    check(inode->reference_count() == 2, "an open description adds a reference");
+
+    // dup() shares the description, so the inode count must not move.
+    reader.value()->ref();
+    check(inode->reference_count() == 2, "dup of a description does not add an inode reference");
+    (void)reader.value()->unref();
+
+    auto* tmp = fs::resolve("/tmp").value();
+    check(!tmp->unlink("lifetime.txt").is_error(), "unlinking a file that is open");
+    check(fs::resolve("/tmp/lifetime.txt").is_error(), "the unlinked name is gone");
+    check(inode->reference_count() == 1, "unlink drops the directory reference");
+    check(inode->is_unlinked(), "the inode knows it has lost its last name");
+    check(inode->parent() == nullptr, "an unlinked inode has no parent");
+
+    // Churn the heap hard enough that a freed inode would certainly have been
+    // handed out again, then read through the descriptor we still hold.
+    for (usize i = 0; i < 64; ++i) {
+        void* scratch = kmalloc(sizeof(fs::Inode) + 64);
+        if (scratch != nullptr) {
+            memset(scratch, 0x5A, sizeof(fs::Inode) + 64);
+            kfree(scratch);
+        }
+    }
+
+    char buffer[64] = {};
+    auto read = reader.value()->read(buffer, sizeof(buffer) - 1);
+    check(!read.is_error() && read.value() == CANARY_LENGTH, "an unlinked file still reads back");
+    check(strcmp(buffer, CANARY) == 0, "and reads back the data it had, not the heap's");
+
+    // Closing the last description is what finally frees it.
+    usize const before = heap_stats().bytes_in_use;
+    fs::release_description(reader.value());
+    usize const after = heap_stats().bytes_in_use;
+    check(after < before, "the last close frees the unlinked inode");
+
+    // A file unlinked with nothing open goes away immediately.
+    auto immediate = fs::open("/tmp/immediate.txt", O_RDWR | O_CREAT, 0644);
+    check(!immediate.is_error(), "creating a file to remove straight away");
+    if (!immediate.is_error()) {
+        fs::release_description(immediate.value());
+        usize const held = heap_stats().bytes_in_use;
+        check(!tmp->unlink("immediate.txt").is_error(), "unlinking a closed file");
+        check(heap_stats().bytes_in_use < held, "removing a closed file frees it at once");
+    }
+}
+
 void test_devfs()
 {
     auto zero = fs::open("/dev/zero", O_RDONLY, 0);
@@ -786,6 +858,7 @@ void run_filesystem_selftests()
 
     test_vfs();
     test_tmpfs();
+    test_inode_lifetime();
     test_devfs();
 
     if (s_checks_failed == 0) {

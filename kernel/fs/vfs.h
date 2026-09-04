@@ -7,10 +7,16 @@
 // synthetic. They all implement Inode, which is what makes `cat /dev/kbd0`
 // and `cat /etc/motd` the same code path from the caller's side.
 //
-// Lifetime: inodes are owned by their filesystem and live as long as the
-// mount does. There is no cache eviction and no reference counting, which is
-// fine for RAM-backed filesystems and will need revisiting when a disk driver
-// arrives -- see docs/roadmap.md.
+// Lifetime: inodes are reference counted. A directory holds one reference to
+// each child it names; an open FileDescription holds one; so does anything
+// else that keeps a pointer for a while, such as a process's working
+// directory. Removing a name drops the directory's reference but destroys
+// nothing while somebody still has the file open, which is what POSIX
+// promises and what the earlier design got wrong -- see the entry in
+// docs/roadmap.md for the reproduction it cost.
+//
+// There is still no cache eviction; a live inode stays in memory. That is
+// fine for RAM-backed filesystems and will need revisiting for a disk.
 
 #pragma once
 
@@ -50,6 +56,35 @@ class FileSystem;
 class Inode {
 public:
     virtual ~Inode() = default;
+
+    // --- lifetime ---
+    //
+    // Atomic because two threads can open and close the same file at once,
+    // and because a driver may drop a device node from an interrupt-adjacent
+    // path.
+
+    void ref() { __atomic_add_fetch(&m_reference_count, 1, __ATOMIC_ACQ_REL); }
+
+    // Drops a reference and destroys the inode if that was the last one.
+    // After this returns the pointer may be dead; callers must not touch it.
+    void unref();
+
+    u32 reference_count() const { return __atomic_load_n(&m_reference_count, __ATOMIC_ACQUIRE); }
+
+    // True once the last directory entry naming this inode has gone. The
+    // inode stays alive for whoever still has it open, but it is no longer
+    // reachable by name.
+    bool is_unlinked() const { return m_unlinked; }
+
+    // Called by a filesystem when the last directory entry naming this inode
+    // has been removed. Does not free anything; the reference count decides.
+    // The parent link goes with the name: the directory may be removed too,
+    // and a dangling m_parent is exactly the bug this change is about.
+    void mark_unlinked()
+    {
+        m_unlinked = true;
+        m_parent = nullptr;
+    }
 
     virtual ErrorOr<usize> read(u64 offset, void* buffer, usize length);
     virtual ErrorOr<usize> write(u64 offset, void const* buffer, usize length);
@@ -92,8 +127,22 @@ protected:
     {
     }
 
+    // For an inode that never had a name -- a pipe -- to start from zero.
+    void drop_initial_link_reference() { m_reference_count = 0; }
+
+    // Destroys and frees. Virtual so a filesystem that pools its inodes can
+    // reclaim rather than free; the default suits everything allocated with
+    // kzalloc, which is all of them today.
+    virtual void destroy();
+
     FileSystem* m_filesystem { nullptr };
     Inode* m_parent { nullptr };
+
+    // Starts at one: the directory entry that names it. An inode created
+    // without a name -- a pipe -- starts at zero and is kept alive purely by
+    // its open descriptions.
+    u32 m_reference_count { 1 };
+    bool m_unlinked { false };
     InodeType m_type { InodeType::Regular };
     u32 m_mode { 0644 };
     u64 m_size { 0 };
@@ -112,10 +161,13 @@ public:
 // after dup(), which is why the offset lives here and not in the fd table.
 class FileDescription {
 public:
+    // Takes a reference on the inode; release_description gives it back.
     FileDescription(Inode& inode, int flags)
         : m_inode(&inode)
         , m_flags(flags)
     {
+        m_inode->ref();
+        m_inode->on_description_opened(m_flags);
     }
 
     ErrorOr<usize> read(void* buffer, usize length);
@@ -132,9 +184,10 @@ public:
     bool is_writable() const { return (m_flags & O_ACCMODE) != O_RDONLY; }
 
     // Descriptions are shared by dup() and inherited across fork(), so they
-    // are reference counted even though inodes are not.
-    void ref() { ++m_reference_count; }
-    bool unref() { return --m_reference_count == 0; }
+    // are reference counted too -- a second count, above the inode's: three
+    // descriptors onto one description still hold the inode just once.
+    void ref() { __atomic_add_fetch(&m_reference_count, 1, __ATOMIC_ACQ_REL); }
+    bool unref() { return __atomic_sub_fetch(&m_reference_count, 1, __ATOMIC_ACQ_REL) == 0; }
 
 private:
     Inode* m_inode;
@@ -158,6 +211,12 @@ ErrorOr<Inode*> resolve_parent(
     char const* path, Inode* base, char (&final_component)[FILENAME_MAX_LENGTH]);
 
 ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* base = nullptr);
+
+// Drops one reference to a description. The last one closes the file, which
+// may in turn destroy the inode if the name has already been removed.
+// Everything that lets go of a FileDescription goes through here, so the
+// unref pairing lives in one place rather than at four call sites.
+void release_description(FileDescription* description);
 
 Inode* root_inode();
 
