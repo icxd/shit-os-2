@@ -20,14 +20,20 @@ target_include_directories(shitos_user_flags INTERFACE
 )
 
 set(LIBC_SOURCES
+    libc/src/assert.c
     libc/src/crt0.S
     libc/src/dirent.c
     libc/src/errno.c
+    libc/src/locale.c
+    libc/src/math.c
+    libc/src/setjmp.S
     libc/src/shitos.c
     libc/src/start.c
     libc/src/stdio.c
     libc/src/stdlib.c
+    libc/src/strtod.c
     libc/src/string.c
+    libc/src/time.c
     libc/src/syscall.c
     libc/src/unistd.c
 )

@@ -90,7 +90,9 @@ rather than by getting a plausible wrong answer:
 - `select` / `poll`. The `poll_readable` device op exists for it.
 - Users and permissions. Everything runs as uid 0 and mode bits are recorded
   but never checked.
-- `fcntl`, `readlink`, `symlink`, `link`, `rename`, `chmod`, `chown`.
+- `fcntl`, `readlink`, `symlink`, `link`, `chmod`, `chown`.
+- `rename`. libc declares it and returns `ENOSYS`; emulating it with
+  copy-then-unlink would be neither atomic nor correct for directories.
 - `clock_gettime` and anything else needing a wall clock; there is no RTC
   driver, so uptime is all the kernel honestly knows.
 - Threads. One thread per process today, though the Thread/Process split is

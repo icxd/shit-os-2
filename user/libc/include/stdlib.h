@@ -25,5 +25,18 @@ char* getenv(const char* name);
 int setenv(const char* name, const char* value, int overwrite);
 
 int abs(int value);
+long labs(long value);
+
+double strtod(const char* s, char** end);
+float strtof(const char* s, char** end);
+double atof(const char* s);
+
+void qsort(void* base, size_t count, size_t size, int (*compare)(const void*, const void*));
+void* bsearch(const void* key, const void* base, size_t count, size_t size,
+    int (*compare)(const void*, const void*));
+
+/* There is no command interpreter to hand a string to. system(NULL) correctly
+ * reports that by returning 0; anything else fails. */
+int system(const char* command);
 
 #endif /* _STDLIB_H */

@@ -24,6 +24,7 @@ add_custom_command(
             "SHITOS_BUILD_DIR=${CMAKE_BINARY_DIR}"
             "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" "${INITRD_PATH}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" ${SHITOS_IMAGE_TARGETS}
+            "${CMAKE_SOURCE_DIR}/rootfs/usr/share/lua/selftest.lua"
     COMMENT "Packing initrd"
     VERBATIM
 )

@@ -26,6 +26,13 @@ char* strtok(char* s, const char* delimiters);
 size_t strspn(const char* s, const char* accept);
 size_t strcspn(const char* s, const char* reject);
 
+char* strpbrk(const char* s, const char* accept);
+int strcoll(const char* a, const char* b);
+size_t strxfrm(char* dest, const char* src, size_t n);
+int strcasecmp(const char* a, const char* b);
+int strncasecmp(const char* a, const char* b, size_t n);
+void* memccpy(void* dest, const void* src, int c, size_t n);
+
 char* strerror(int code);
 
 #endif /* _STRING_H */

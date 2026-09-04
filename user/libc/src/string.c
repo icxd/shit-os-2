@@ -186,6 +186,70 @@ char* strstr(const char* haystack, const char* needle)
     return 0;
 }
 
+char* strpbrk(const char* s, const char* accept)
+{
+    for (; *s; ++s) {
+        if (strchr(accept, *s))
+            return (char*)s;
+    }
+    return 0;
+}
+
+/* The C locale is the only locale, and in it collation order is byte order. */
+int strcoll(const char* a, const char* b)
+{
+    return strcmp(a, b);
+}
+
+size_t strxfrm(char* dest, const char* src, size_t n)
+{
+    size_t const length = strlen(src);
+    if (n > 0) {
+        size_t const copied = length < n - 1 ? length : n - 1;
+        memcpy(dest, src, copied);
+        dest[copied] = '\0';
+    }
+    return length;
+}
+
+static int lower(int c)
+{
+    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+int strcasecmp(const char* a, const char* b)
+{
+    while (*a && lower((unsigned char)*a) == lower((unsigned char)*b)) {
+        ++a;
+        ++b;
+    }
+    return lower((unsigned char)*a) - lower((unsigned char)*b);
+}
+
+int strncasecmp(const char* a, const char* b, size_t n)
+{
+    while (n && *a && lower((unsigned char)*a) == lower((unsigned char)*b)) {
+        ++a;
+        ++b;
+        --n;
+    }
+    if (n == 0)
+        return 0;
+    return lower((unsigned char)*a) - lower((unsigned char)*b);
+}
+
+void* memccpy(void* dest, const void* src, int c, size_t n)
+{
+    unsigned char* d = dest;
+    const unsigned char* s = src;
+    while (n--) {
+        *d++ = *s;
+        if (*s++ == (unsigned char)c)
+            return d;
+    }
+    return 0;
+}
+
 char* strdup(const char* s)
 {
     size_t length = strlen(s) + 1;

@@ -14,6 +14,7 @@ set -eu
 
 OUTPUT="${1:?usage: mkinitrd.sh <output.tar>}"
 BUILD_DIR="${SHITOS_BUILD_DIR:-}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
@@ -29,7 +30,15 @@ MOTD
 
 echo "shit-os-2" > "$STAGING/etc/hostname"
 
-# Compiled userland, if there is any yet. Stage G fills this in.
+# An overlay of files kept in the source tree: /etc content, scripts, anything
+# that is not a compiled artifact. Copied first so a build product of the same
+# name wins.
+if [ -d "$ROOT/rootfs" ]; then
+    ( cd "$ROOT/rootfs" && find . -mindepth 1 -print0 | cpio -0pdm --quiet "$STAGING" 2>/dev/null ) \
+        || cp -r "$ROOT/rootfs/." "$STAGING/"
+fi
+
+# Compiled userland, if there is any yet.
 if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR/user/bin" ]; then
     for binary in "$BUILD_DIR"/user/bin/*; do
         [ -f "$binary" ] && [ -x "$binary" ] || continue

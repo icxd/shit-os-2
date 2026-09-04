@@ -21,6 +21,24 @@ To regenerate, with a PSF font available at the path in the script:
 python3 tools/genfont.py
 ```
 
+## Lua (a port, not vendored)
+
+`ports/lua/` builds Lua 5.4.7 against our libc. The source is **not** in this
+repository: the port script downloads the official tarball, checks its SHA-256,
+and builds it. That keeps 30,000 lines of somebody else's source out of a GPLv3
+tree and makes it obvious which code here is ours.
+
+Lua is distributed under the MIT licence. Nothing is patched -- it compiles
+unmodified against our headers using its generic ISO C configuration, which was
+the point of choosing it: a port that needs patches is a bug report about our
+libc, not about the program.
+
+- Upstream: <https://www.lua.org/>
+- Licence: <https://www.lua.org/license.html>
+
+The first build needs network access; after that the tarball is cached in
+`.port-cache/`. `cmake -B build -DSHITOS_PORTS=OFF` skips ports entirely.
+
 ## Specifications implemented, not copied
 
 For completeness, since these shape the code without contributing any:

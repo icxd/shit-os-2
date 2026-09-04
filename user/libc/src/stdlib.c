@@ -275,3 +275,83 @@ int setenv(const char* name, const char* value, int overwrite)
     errno = ENOSYS;
     return -1;
 }
+
+/* --- sorting and searching ----------------------------------------------- */
+
+static void swap_bytes(char* a, char* b, size_t size)
+{
+    while (size--) {
+        char const t = *a;
+        *a++ = *b;
+        *b++ = t;
+    }
+}
+
+void qsort(void* base, size_t count, size_t size, int (*compare)(const void*, const void*))
+{
+    /*
+     * Shell sort with Ciura's gap sequence. Not the fastest option, but it
+     * needs no recursion and no scratch allocation -- both of which matter in
+     * a libc that may be called when memory is short -- and it has no
+     * quadratic case on the adversarial inputs a naive quicksort chokes on.
+     */
+    static const size_t GAPS[] = { 701, 301, 132, 57, 23, 10, 4, 1 };
+
+    if (count < 2 || size == 0)
+        return;
+
+    char* const array = base;
+
+    for (size_t g = 0; g < sizeof(GAPS) / sizeof(GAPS[0]); ++g) {
+        size_t const gap = GAPS[g];
+        if (gap >= count)
+            continue;
+
+        for (size_t i = gap; i < count; ++i) {
+            for (size_t j = i; j >= gap; j -= gap) {
+                char* const left = array + (j - gap) * size;
+                char* const right = array + j * size;
+                if (compare(left, right) <= 0)
+                    break;
+                swap_bytes(left, right, size);
+            }
+        }
+    }
+}
+
+void* bsearch(const void* key, const void* base, size_t count, size_t size,
+    int (*compare)(const void*, const void*))
+{
+    const char* const array = base;
+    size_t low = 0;
+    size_t high = count;
+
+    while (low < high) {
+        size_t const middle = low + (high - low) / 2;
+        const char* const candidate = array + middle * size;
+        int const order = compare(key, candidate);
+        if (order == 0)
+            return (void*)candidate;
+        if (order < 0)
+            high = middle;
+        else
+            low = middle + 1;
+    }
+
+    return 0;
+}
+
+int system(const char* command)
+{
+    /* Zero means "there is no command processor", which is exactly true and is
+     * what a program is supposed to check before relying on one. */
+    if (command == 0)
+        return 0;
+    errno = ENOSYS;
+    return -1;
+}
+
+long labs(long value)
+{
+    return value < 0 ? -value : value;
+}

@@ -15,12 +15,31 @@ What exists, what is next, and what is deliberately not being done yet.
 - Ring 3: syscall gate, 33 POSIX calls, static ELF loading with correct auxv,
   fork/execve/waitpid, pipes, signals with real handler delivery, a TTY with
   canonical line discipline.
-- A C library and eleven userland programs, reaching an interactive shell.
-- 144 kernel self-test assertions that run at every boot.
+- A C library and twelve userland programs, reaching an interactive shell.
+- FPU and SSE state preserved across context switches.
+- **Lua 5.4 runs**, unpatched, from `ports/lua`. 68 of its own checks pass,
+  including the floating point, string formatting, file I/O, garbage
+  collection and error-unwinding paths.
+- 158 kernel self-test assertions at every boot, plus a host-side libm
+  accuracy check against glibc.
 
 ## Next
 
 Roughly in the order that each one unblocks the most.
+
+**Reference-counted inodes.** Not a nicety any more: `TmpfsInode::unlink`
+destroys the inode immediately, so removing a file another process still has
+open leaves that process holding a dangling pointer. Reachable from the shell
+today with `cat /tmp/f &` followed by `rm /tmp/f`. This is why `tmpfile()` does
+not use the usual create-then-unlink trick.
+
+**A CMOS real-time clock.** `time()` currently reports seconds since boot,
+because there is no clock to ask. That makes every timestamp and every date a
+script prints wrong. The driver is small, and it would be the second loadable
+module -- useful in itself, since one driver is not much evidence that the
+module ABI generalises.
+
+**rename(2).** There is no syscall for it, so `os.rename` fails with ENOSYS.
 
 **Copy-on-write fork.** `fork` currently copies every page eagerly, which is
 pure waste in the fork-then-exec case a shell spends all its time in. The page

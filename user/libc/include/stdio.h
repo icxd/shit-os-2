@@ -8,6 +8,14 @@
 #define EOF (-1)
 #define BUFSIZ 1024
 
+#define _IOFBF 0
+#define _IOLBF 1
+#define _IONBF 2
+
+#define L_tmpnam 32
+#define FOPEN_MAX 16
+#define FILENAME_MAX 1024
+
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
@@ -33,6 +41,21 @@ int getchar(void);
 int putchar(int c);
 int puts(const char* s);
 int ungetc(int c, FILE* stream);
+int getc(FILE* stream);
+int putc(int c, FILE* stream);
+
+int fseek(FILE* stream, long offset, int whence);
+long ftell(FILE* stream);
+void rewind(FILE* stream);
+void clearerr(FILE* stream);
+int setvbuf(FILE* stream, char* buffer, int mode, size_t size);
+void setbuf(FILE* stream, char* buffer);
+FILE* freopen(const char* path, const char* mode, FILE* stream);
+FILE* tmpfile(void);
+char* tmpnam(char* buffer);
+
+int remove(const char* path);
+int rename(const char* from, const char* to);
 
 int feof(FILE* stream);
 int ferror(FILE* stream);

@@ -30,8 +30,9 @@ It is still not useful. It is now genuinely an operating system.
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
 | **Modules** | ELF64 `.ko` loaded at runtime; PS/2 keyboard driver written in C |
 | **Userland** | Ring 3, 33 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals, a TTY with canonical line discipline |
-| **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` |
-| **Tests** | 144 assertions run in the kernel at every boot |
+| **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` `stty` |
+| **Ports** | **Lua 5.4**, unpatched, built against our libc |
+| **Tests** | 158 assertions in the kernel at every boot, plus a host-side libm check against glibc |
 
 The shell has builtins, `PATH` lookup, pipelines, `<` `>` `>>` redirection and
 quoting. `^C` interrupts the foreground command. A null dereference in a
@@ -39,6 +40,39 @@ program kills that program and nothing else.
 
 `docs/syscalls.md` lists exactly what is *not* implemented, deliberately, so
 nothing here has to be taken on trust.
+
+## It runs Lua
+
+![Lua running on shit os 2](docs/lua.png)
+
+Lua 5.4.7 builds against our libc with **no patches** — its generic ISO C
+configuration compiles unmodified. That was the point of choosing it: a port
+needing patches would be a bug report about the libc, not about the program.
+
+```
+/ $ lua -v
+Lua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio
+/ $ lua
+> print(("%.10f"):format(math.pi))
+3.1415926536
+> print(select(2, pcall(function() error("caught") end)))
+stdin:1: caught
+```
+
+68 checks pass, covering integer and float arithmetic, the libm, string
+formatting, pattern matching, tables, closures, metatables, coroutines,
+`pcall` unwinding through `longjmp`, the garbage collector, and file I/O with
+`seek`/`tell`/append. Run them yourself with
+`lua /usr/share/lua/selftest.lua`.
+
+Porting it found four real bugs, described in
+[the roadmap](docs/roadmap.md) and in the commits that fixed them — including
+one where the kernel was corrupting SSE registers on *every single context
+switch*.
+
+The source is not vendored. `ports/lua/build.sh` downloads the official
+tarball, verifies its SHA-256 and builds it; `cmake -B build -DSHITOS_PORTS=OFF`
+skips it if you would rather not have the network involved.
 
 ## Building
 
@@ -109,8 +143,11 @@ kernel/
 
 modules/ps2kbd/      a loadable driver, in C, using nothing but KernelApi
 user/libc/           the C library
+user/libc/test/      host-side libm accuracy check against glibc
 user/bin/            init, sh and the utilities
-tools/               mkinitrd, run-qemu, screenshot, genfont
+ports/lua/           Lua, fetched and built rather than vendored
+rootfs/              files copied into the image as-is
+tools/               mkinitrd, run-qemu, screenshot, genfont, check-libm
 ```
 
 ## Documentation
@@ -140,9 +177,16 @@ not a restructuring.
 exceptions, no RTTI, no sentinel return codes that can be ignored by accident.
 
 **The self tests run on the machine.** An OS has no harness to run under, so
-144 assertions run during boot, covering the physical allocator, the heap, W^X,
-interrupt delivery, all three filesystems, and the module loader. Several real
-bugs in this repository were found by them rather than by inspection.
+158 assertions run during boot, covering the physical allocator, the heap, W^X,
+interrupt delivery, FPU state across context switches, all three filesystems,
+and the module loader. Several real bugs in this repository were found by them
+rather than by inspection. The libm is checked separately, on the host, against
+glibc in ULPs — `./tools/check-libm.sh`.
+
+**Ports are the other test.** Everything in `user/bin` was written against a
+libc that was written for it, which proves nothing. Software nobody here wrote
+is the only honest check, which is why Lua is in the tree and why it is not
+patched.
 
 ## License
 

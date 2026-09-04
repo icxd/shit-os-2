@@ -71,6 +71,23 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  libm:
+    name: libm accuracy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm
+
+      - name: Compare against glibc in ULPs
+        # Numerical accuracy is not something the boot-time self tests can
+        # check: the kernel is built without SSE and has no reference to
+        # compare against. The host has both.
+        run: ./tools/check-libm.sh
+
   format:
     name: formatting
     runs-on: ubuntu-latest

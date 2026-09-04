@@ -64,5 +64,6 @@ target_compile_definitions(shitos_kernel_flags INTERFACE SHITOS_KERNEL=1)
 add_subdirectory(kernel)
 add_subdirectory(modules)
 add_subdirectory(user)
+add_subdirectory(ports)
 
 include(cmake/image.cmake)

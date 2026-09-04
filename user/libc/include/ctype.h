@@ -34,6 +34,16 @@ static inline int isprint(int c)
 {
     return c >= 32 && c < 127;
 }
+static inline int isgraph(int c)
+{
+    /* Printable and not a space: the one classifier that differs from
+     * isprint, and the one Lua's string.format uses. */
+    return c > 32 && c < 127;
+}
+static inline int isblank(int c)
+{
+    return c == ' ' || c == '\t';
+}
 static inline int iscntrl(int c)
 {
     return c < 32 || c == 127;

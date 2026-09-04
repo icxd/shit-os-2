@@ -31,6 +31,19 @@ and it is cheap: a new subsystem should arrive with a handful of checks that
 would have caught the bugs you hit writing it. Several of the checks in there
 exist because they caught something real.
 
+The libm is checked separately, against the host's glibc in ULPs, because the
+boot-time tests have nothing to compare numerical results against:
+
+```sh
+./tools/check-libm.sh
+```
+
+And the real test of the C library is software nobody here wrote:
+
+```sh
+lua /usr/share/lua/selftest.lua      # inside the OS
+```
+
 To see the framebuffer rather than the serial log:
 
 ```sh
@@ -91,6 +104,13 @@ space.
 | A syscall | `kernel/sys/syscall.cpp` plus `include/shitos/abi/syscall.h` |
 | A libc function | `user/libc/src/`, declared in the standard header |
 | A program | `user/bin/`, one file, registered in its `CMakeLists.txt` |
+| A third-party program | `ports/<name>/build.sh`, fetched and checksummed, never vendored |
+| A file to ship in the image as-is | `rootfs/`, mirrored into the initrd |
+
+**A port that needs patching is a bug report about our libc.** If a program
+will not build, the interesting question is what we are missing, not how to
+work around it. Lua is in the tree unpatched for that reason, and it found four
+real bugs on the way in.
 
 Two boundaries are worth defending:
 

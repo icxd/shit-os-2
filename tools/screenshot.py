@@ -16,6 +16,7 @@ import tempfile
 import time
 
 iso, output, delay, keys = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
+settle = float(sys.argv[5]) if len(sys.argv) > 5 else 1.5
 
 with tempfile.TemporaryDirectory() as tmp:
     monitor = os.path.join(tmp, "monitor.sock")
@@ -45,8 +46,9 @@ with tempfile.TemporaryDirectory() as tmp:
 
         for key in keys.split():
             command("sendkey " + key)
+        # Give whatever was typed time to finish before capturing.
         if keys:
-            time.sleep(1.5)
+            time.sleep(settle)
 
         command("screendump " + ppm)
         time.sleep(1.5)
