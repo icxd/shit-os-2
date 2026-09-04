@@ -54,6 +54,14 @@ inline constexpr u64 USER_SPACE_END = 0x0000800000000000ULL;
 inline constexpr u64 MMIO_WINDOW_BASE = 0xFFFFC00000000000ULL;
 inline constexpr u64 MMIO_WINDOW_SIZE = 0x0000010000000000ULL;
 
+// Loadable modules go here rather than in the heap, and the distance is the
+// whole reason: a module in the direct map would be more than 2 GiB from the
+// kernel image, so every R_X86_64_PC32 relocation to a compiler intrinsic
+// would overflow. 256 MiB above the kernel base keeps them comfortably in
+// range of a 32-bit displacement.
+inline constexpr u64 MODULE_WINDOW_BASE = 0xFFFFFFFF90000000ULL;
+inline constexpr u64 MODULE_WINDOW_SIZE = 0x0000000010000000ULL;
+
 class AddressSpace {
 public:
     // The kernel's own space, built during boot to replace the bootstrap
@@ -72,6 +80,11 @@ public:
 
     void unmap(VirtAddr address);
     void unmap_range(VirtAddr address, usize length);
+
+    // Changes the permissions on an existing mapping without disturbing what
+    // it points at. Used to drop a module's .text to read-execute once its
+    // relocations have been applied.
+    ErrorOr<void> protect(VirtAddr address, usize length, PageFlags flags);
 
     ErrorOr<PhysAddr> translate(VirtAddr address) const;
     bool is_mapped(VirtAddr address) const;
@@ -119,5 +132,10 @@ void virtual_memory_initialize(boot::BootInfo const& info);
 // KernelApi::map_mmio is wired to.
 ErrorOr<void*> map_mmio(PhysAddr base, usize length);
 void unmap_mmio(void* address, usize length);
+
+// Backing store for a loadable module: anonymous, writable, zeroed pages in
+// the module window. The loader re-protects the executable parts afterwards.
+ErrorOr<void*> allocate_module_memory(usize length);
+void free_module_memory(void* address, usize length);
 
 } // namespace kernel::mm

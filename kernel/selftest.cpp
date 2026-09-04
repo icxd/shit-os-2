@@ -5,9 +5,11 @@
 #include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/boot/boot_info.h>
 #include <kernel/fs/devfs.h>
+#include <kernel/module/loader.h>
 #include <kernel/fs/tmpfs.h>
 #include <kernel/fs/vfs.h>
 #include <kernel/dev/console.h>
+#include <kernel/lib/elf.h>
 #include <kernel/lib/string.h>
 #include <kernel/mm/address_space.h>
 #include <kernel/mm/heap.h>
@@ -522,7 +524,108 @@ void test_devfs()
     }
 }
 
+// --- modules ------------------------------------------------------------
+
+struct ModuleScan {
+    bool found_ps2kbd;
+    usize count;
+    bool all_abi_current;
+};
+
+void inspect_module(LoadedModule const& module, void* context)
+{
+    auto* scan = static_cast<ModuleScan*>(context);
+    ++scan->count;
+    if (strcmp(module.name(), "ps2kbd") == 0)
+        scan->found_ps2kbd = true;
+    if (module.abi_version() != SHITOS_MODULE_ABI_VERSION)
+        scan->all_abi_current = false;
+
+    // A loaded module must live in the module window, or its 32-bit
+    // displacements to kernel intrinsics could not have been in range.
+    auto const base = reinterpret_cast<u64>(module.base());
+    if (base < mm::MODULE_WINDOW_BASE || base >= mm::MODULE_WINDOW_BASE + mm::MODULE_WINDOW_SIZE)
+        scan->all_abi_current = false;
+}
+
+void test_modules()
+{
+    auto const& api = ModuleLoader::kernel_api();
+    check(api.abi_version == SHITOS_MODULE_ABI_VERSION, "the KernelApi advertises the current ABI");
+
+    // A null entry in the table is a module crashing at an unhelpful moment,
+    // so check the whole surface rather than the parts we happen to use.
+    check(api.log != nullptr && api.panic != nullptr, "logging entries are populated");
+    check(api.kmalloc != nullptr && api.kzalloc != nullptr && api.kfree != nullptr,
+        "memory entries are populated");
+    check(api.map_mmio != nullptr && api.unmap_mmio != nullptr, "mmio entries are populated");
+    check(api.inb != nullptr && api.outb != nullptr && api.inw != nullptr && api.outw != nullptr
+            && api.inl != nullptr && api.outl != nullptr,
+        "port io entries are populated");
+    check(api.irq_register != nullptr && api.irq_unregister != nullptr,
+        "interrupt entries are populated");
+    check(api.device_register != nullptr && api.device_unregister != nullptr,
+        "device entries are populated");
+    check(api.waitqueue_create != nullptr && api.waitqueue_destroy != nullptr
+            && api.waitqueue_wait != nullptr && api.waitqueue_wake_all != nullptr,
+        "wait queue entries are populated");
+    check(api.uptime_ms != nullptr && api.sleep_ms != nullptr && api.yield != nullptr,
+        "timing entries are populated");
+
+    ModuleScan scan { false, 0, true };
+    ModuleLoader::for_each(inspect_module, &scan);
+
+    check(scan.count == ModuleLoader::module_count(), "for_each visits every module");
+    check(scan.count >= 1, "at least one module loaded");
+    check(scan.found_ps2kbd, "ps2kbd loaded");
+    check(scan.all_abi_current, "every module is at the current ABI and in the module window");
+
+    // The driver registered a device node, which is the observable proof that
+    // the whole path -- relocation, init, device_register -- worked.
+    auto keyboard = fs::resolve("/dev/kbd0");
+    check(!keyboard.is_error(), "the module's device node appeared in /dev");
+    if (!keyboard.is_error())
+        check(keyboard.value()->type() == fs::InodeType::CharacterDevice,
+            "/dev/kbd0 is a character device");
+
+    // Loading a bogus image must be refused rather than jumped into.
+    u8 garbage[128];
+    memset(garbage, 0xCC, sizeof(garbage));
+    auto rejected = ModuleLoader::load("garbage.ko", garbage, sizeof(garbage));
+    check(rejected.is_error() && rejected.error().code() == ENOEXEC,
+        "a non-ELF image is rejected");
+
+    // An ELF header that is valid but the wrong type must also be refused.
+    u8 wrong_type[sizeof(elf::Elf64_Ehdr)] = {};
+    auto* header = reinterpret_cast<elf::Elf64_Ehdr*>(wrong_type);
+    header->e_ident[0] = elf::ELFMAG0;
+    header->e_ident[1] = elf::ELFMAG1;
+    header->e_ident[2] = elf::ELFMAG2;
+    header->e_ident[3] = elf::ELFMAG3;
+    header->e_ident[4] = elf::ELFCLASS64;
+    header->e_ident[5] = elf::ELFDATA2LSB;
+    header->e_machine = elf::EM_X86_64;
+    header->e_type = elf::ET_EXEC;
+    auto wrong = ModuleLoader::load("executable.ko", wrong_type, sizeof(wrong_type));
+    check(wrong.is_error(), "an ET_EXEC image is rejected as a module");
+}
+
 } // namespace
+
+void run_module_selftests()
+{
+    s_checks_run = 0;
+    s_checks_failed = 0;
+
+    test_modules();
+
+    if (s_checks_failed == 0) {
+        klog(LOG_INFO, "selftest", "%zu module checks passed", s_checks_run);
+    } else {
+        klog(LOG_ERROR, "selftest", "%zu of %zu module checks FAILED", s_checks_failed, s_checks_run);
+        panic("module self tests failed");
+    }
+}
 
 void run_filesystem_selftests()
 {

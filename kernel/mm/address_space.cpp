@@ -35,6 +35,9 @@ alignas(AddressSpace) u8 s_kernel_space_storage[sizeof(AddressSpace)];
 u64 s_mmio_next = MMIO_WINDOW_BASE;
 InterruptSpinLock s_mmio_lock;
 
+u64 s_module_next = MODULE_WINDOW_BASE;
+InterruptSpinLock s_module_lock;
+
 constexpr usize index_of(u64 address, int level)
 {
     // level 4 = PML4, 3 = PDPT, 2 = PD, 1 = PT
@@ -288,6 +291,28 @@ void AddressSpace::destroy_user_mappings()
     m_resident_pages = 0;
 }
 
+ErrorOr<void> AddressSpace::protect(VirtAddr address, usize length, PageFlags flags)
+{
+    u64 const start = align_down<u64>(raw(address), PAGE_SIZE);
+    u64 const end = align_up<u64>(raw(address) + length, PAGE_SIZE);
+
+    for (u64 page_address = start; page_address < end; page_address += PAGE_SIZE) {
+        u64* pt = walk_to_leaf_table(page_address);
+        if (pt == nullptr)
+            return Error::from_errno(EFAULT);
+
+        u64& entry = pt[index_of(page_address, 1)];
+        if (!(entry & static_cast<u64>(PageFlags::Present)))
+            return Error::from_errno(EFAULT);
+
+        // Keep the frame, replace the permissions.
+        entry = (entry & ADDRESS_MASK) | static_cast<u64>(flags | PageFlags::Present);
+        flush(page_address);
+    }
+
+    return {};
+}
+
 void AddressSpace::activate() const { arch::write_cr3(raw(m_root)); }
 
 AddressSpace& AddressSpace::kernel_space()
@@ -348,6 +373,46 @@ void unmap_mmio(void* address, usize length)
     // only the mapping goes away. Drivers unloading and reloading are rare
     // enough that a real allocator here would be premature.
     AddressSpace::kernel_space().unmap_range(virt(start), length);
+}
+
+ErrorOr<void*> allocate_module_memory(usize length)
+{
+    if (length == 0)
+        return Error::from_errno(EINVAL);
+
+    InterruptLockGuard guard(s_module_lock);
+
+    usize const rounded = align_up<usize>(length, PAGE_SIZE);
+    if (s_module_next + rounded > MODULE_WINDOW_BASE + MODULE_WINDOW_SIZE)
+        return Error::from_errno(ENOMEM);
+
+    u64 const base = s_module_next;
+    // Writable and non-executable to begin with. The loader relocates into it
+    // and then re-protects the sections that need to run.
+    auto const flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute
+        | PageFlags::Global;
+
+    TRY(AddressSpace::kernel_space().map_anonymous(virt(base), rounded, flags));
+    s_module_next += rounded;
+
+    return reinterpret_cast<void*>(base);
+}
+
+void free_module_memory(void* address, usize length)
+{
+    // The window is a bump allocator; unloading a module returns its pages to
+    // the physical allocator but not its address range. Modules are loaded a
+    // handful of times per boot, so a real allocator here would be premature.
+    u64 const start = align_down<u64>(reinterpret_cast<u64>(address), PAGE_SIZE);
+    usize const rounded = align_up<usize>(length, PAGE_SIZE);
+
+    auto& space = AddressSpace::kernel_space();
+    for (u64 page_address = start; page_address < start + rounded; page_address += PAGE_SIZE) {
+        auto frame = space.translate(virt(page_address));
+        space.unmap(virt(page_address));
+        if (!frame.is_error())
+            free_page(phys(align_down<u64>(raw(frame.value()), PAGE_SIZE)));
+    }
 }
 
 void virtual_memory_initialize(boot::BootInfo const& info)

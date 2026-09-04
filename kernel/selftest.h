@@ -21,4 +21,7 @@ void run_scheduler_selftests();
 // Needs the filesystems mounted.
 void run_filesystem_selftests();
 
+// Needs the modules loaded.
+void run_module_selftests();
+
 } // namespace kernel

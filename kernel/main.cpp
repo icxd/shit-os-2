@@ -21,6 +21,7 @@
 #include <kernel/mm/address_space.h>
 #include <kernel/mm/heap.h>
 #include <kernel/mm/physical.h>
+#include <kernel/module/loader.h>
 #include <kernel/panic.h>
 #include <kernel/sched/scheduler.h>
 #include <kernel/selftest.h>
@@ -171,7 +172,14 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
         panic("could not mount the boot filesystems: %s", mounted.error().to_string());
     run_filesystem_selftests();
 
-    klog(LOG_INFO, "boot", "stage D complete: vfs with initrd, tmpfs and devfs");
+    ModuleLoader::initialize();
+    if (auto loaded = ModuleLoader::load_all_from("/lib/modules"); loaded.is_error())
+        klog(LOG_WARN, "module", "could not scan /lib/modules: %s", loaded.error().to_string());
+    else
+        klog(LOG_INFO, "module", "%zu module(s) loaded", loaded.value());
+    run_module_selftests();
+
+    klog(LOG_INFO, "boot", "stage E complete: runtime-loadable driver modules");
     klog(LOG_INFO, "boot", "uptime %llu ms, %zu threads, %llu context switches",
         Scheduler::uptime_ms(), Scheduler::thread_count(), Scheduler::context_switches());
 

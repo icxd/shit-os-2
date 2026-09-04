@@ -25,6 +25,8 @@ set(KERNEL_SOURCES
     mm/address_space.cpp
     mm/heap.cpp
     mm/physical.cpp
+    module/kernel_api.cpp
+    module/loader.cpp
     sched/scheduler.cpp
     sched/thread.cpp
     sched/waitqueue.cpp

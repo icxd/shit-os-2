@@ -10,14 +10,20 @@ set(ISO_ROOT "${CMAKE_BINARY_DIR}/isoroot")
 set(ISO_PATH "${CMAKE_BINARY_DIR}/shit-os-2.iso")
 set(INITRD_PATH "${CMAKE_BINARY_DIR}/initrd.tar")
 
+# Everything that has to be built before the initrd can be packed: modules and
+# userland programs register themselves here as they are declared.
+get_property(SHITOS_IMAGE_TARGETS GLOBAL PROPERTY SHITOS_IMAGE_TARGETS)
+
 # The initrd is a plain ustar archive. `tar` is the tool; there is no bespoke
 # image format to learn, and you can inspect a broken one with tar -tvf.
 add_custom_command(
     OUTPUT "${INITRD_PATH}"
     COMMAND "${CMAKE_COMMAND}" -E env
-            SHITOS_BUILD_DIR="${CMAKE_BINARY_DIR}"
+            # Quote the whole assignment, not just the value: an unquoted
+            # NAME="${VAR}" makes the quotes part of the value.
+            "SHITOS_BUILD_DIR=${CMAKE_BINARY_DIR}"
             "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" "${INITRD_PATH}"
-    DEPENDS "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" ${SHITOS_USERLAND_TARGETS}
+    DEPENDS "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" ${SHITOS_IMAGE_TARGETS}
     COMMENT "Packing initrd"
     VERBATIM
 )
