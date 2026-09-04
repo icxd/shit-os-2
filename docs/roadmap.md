@@ -27,11 +27,27 @@ What exists, what is next, and what is deliberately not being done yet.
 
 Roughly in the order that each one unblocks the most.
 
-**Reference-counted inodes.** Not a nicety any more: `TmpfsInode::unlink`
-destroys the inode immediately, so removing a file another process still has
-open leaves that process holding a dangling pointer. Reachable from the shell
-today with `cat /tmp/f &` followed by `rm /tmp/f`. This is why `tmpfile()` does
-not use the usual create-then-unlink trick.
+**Reference-counted inodes.** The most serious known bug, and demonstrated
+rather than theorised. `TmpfsInode::unlink` destroys the inode immediately, so
+a process that still has the file open is left holding a dangling pointer into
+the kernel heap. Once that chunk is reused, the open handle reads whatever now
+occupies it:
+
+```lua
+local f = io.open("/tmp/x", "w")  f:write("CANARY-DATA-1234")  f:close()
+local g = io.open("/tmp/x", "r")
+os.remove("/tmp/x")
+for i = 1, 200 do                      -- churn the kernel heap
+  local h = io.open("/tmp/c" .. i, "w")  h:write("ZZZZZZZZ")  h:close()
+end
+print(g:read("a"))                     --> ZZZZZZZZ, not CANARY-DATA-1234
+```
+
+So it is not only a use-after-free, it discloses another file's contents to a
+process reading its own. The fix is a reference count on Inode, taken when a
+FileDescription is created and dropped when the last one closes, with the free
+deferred until it reaches zero. That also lets `tmpfile()` use the usual
+create-then-unlink trick, which it currently cannot.
 
 **A CMOS real-time clock.** `time()` currently reports seconds since boot,
 because there is no clock to ask. That makes every timestamp and every date a
