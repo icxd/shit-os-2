@@ -28,6 +28,7 @@
 #include <kernel/sys/syscall.h>
 
 #include <shitos/abi/fcntl.h>
+#include <shitos/abi/ioctl.h>
 #include <shitos/abi/mman.h>
 #include <shitos/abi/signal.h>
 #include <shitos/abi/syscall.h>
@@ -669,22 +670,83 @@ ErrorOr<u64> sys_getcwd(InterruptFrame&, u64 buffer, u64 capacity, u64, u64, u64
     return buffer;
 }
 
+// The three legacy requests whose numbers predate the size encoding. Anything
+// defined with _IOR/_IOW/_IOWR describes itself and needs no entry here.
+struct LegacyIoctl {
+    u32 request;
+    u32 direction;
+    usize size;
+};
+
+constexpr LegacyIoctl LEGACY_IOCTLS[] = {
+    { TCGETS, _IOC_READ, sizeof(struct termios) },
+    { TCSETS, _IOC_WRITE, sizeof(struct termios) },
+    { TIOCGWINSZ, _IOC_READ, sizeof(struct winsize) },
+};
+
+bool describe_ioctl(u32 request, u32& direction, usize& size)
+{
+    for (auto const& legacy : LEGACY_IOCTLS) {
+        if (legacy.request == request) {
+            direction = legacy.direction;
+            size = legacy.size;
+            return true;
+        }
+    }
+
+    direction = _IOC_DIRECTION(request);
+    size = _IOC_ARGUMENT_SIZE(request);
+
+    // A request with no encoded size takes its argument by value, not by
+    // pointer, and nothing is copied in either direction.
+    return size != 0;
+}
+
 ErrorOr<u64> sys_ioctl(InterruptFrame&, u64 fd, u64 request, u64 argument, u64, u64, u64)
 {
     auto* description = TRY(description_for(static_cast<int>(fd)));
+    auto const number = static_cast<u32>(request);
 
-    // ioctl arguments are small structs; bounce through the kernel so the
-    // device never sees a raw user pointer.
-    u8 scratch[256] = {};
-    if (argument != 0)
-        (void)copy_from_user(scratch, argument, sizeof(scratch));
+    u32 direction = _IOC_NONE;
+    usize size = 0;
 
-    int const result = TRY(description->inode().ioctl(static_cast<u32>(request), scratch));
+    // No pointer argument: hand the value straight to the device.
+    if (!describe_ioctl(number, direction, size) || argument == 0)
+        return static_cast<u64>(
+            TRY(description->inode().ioctl(number, reinterpret_cast<void*>(argument))));
 
-    if (argument != 0)
-        (void)copy_to_user(argument, scratch, sizeof(scratch));
+    if (size > PAGE_SIZE)
+        return Error::from_errno(EINVAL);
 
-    return static_cast<u64>(result);
+    // Bounce through the kernel so the device never sees a user pointer, and
+    // move exactly the number of bytes the request describes. Copying a fixed
+    // size instead would write past the caller's struct.
+    auto* scratch = static_cast<u8*>(kzalloc(size));
+    if (scratch == nullptr)
+        return Error::from_errno(ENOMEM);
+
+    if ((direction & _IOC_WRITE) != 0) {
+        if (auto copied = copy_from_user(scratch, argument, size); copied.is_error()) {
+            kfree(scratch);
+            return copied.error();
+        }
+    }
+
+    auto result = description->inode().ioctl(number, scratch);
+    if (result.is_error()) {
+        kfree(scratch);
+        return result.error();
+    }
+
+    if ((direction & _IOC_READ) != 0) {
+        if (auto copied = copy_to_user(argument, scratch, size); copied.is_error()) {
+            kfree(scratch);
+            return copied.error();
+        }
+    }
+
+    kfree(scratch);
+    return static_cast<u64>(result.value());
 }
 
 ErrorOr<u64> sys_kill(InterruptFrame&, u64 pid, u64 signal, u64, u64, u64, u64)

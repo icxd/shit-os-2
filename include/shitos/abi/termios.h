@@ -3,8 +3,15 @@
 
 #pragma once
 
+#include <shitos/abi/ioctl.h>
 #include <shitos/types.h>
 
+/*
+ * These keep their traditional numbers rather than being re-encoded with the
+ * _IOR/_IOW macros, because ported software hardcodes them. They predate the
+ * encoding and so carry no size; the kernel has a small table for exactly
+ * these three. Anything new should use the macros and describe itself.
+ */
 #define TCGETS 0x5401
 #define TCSETS 0x5402
 #define TIOCGWINSZ 0x5413

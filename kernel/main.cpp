@@ -190,7 +190,6 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
             Scheduler::enqueue(serial.value());
     }
 
-    
     klog(LOG_INFO, "boot", "ready in %llu ms: %zu threads, %llu context switches",
         Scheduler::uptime_ms(), Scheduler::thread_count(), Scheduler::context_switches());
 

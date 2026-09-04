@@ -21,6 +21,9 @@
 #include <kernel/sched/waitqueue.h>
 #include <kernel/selftest.h>
 
+#include <shitos/abi/ioctl.h>
+#include <shitos/abi/termios.h>
+
 extern "C" {
 extern u8 __text_start[];
 extern u8 __rodata_start[];
@@ -554,6 +557,36 @@ void inspect_module(LoadedModule const& module, void* context)
         scan->all_abi_current = false;
 }
 
+void test_ioctl_encoding()
+{
+    // The encoding is what lets sys_ioctl move exactly the right number of
+    // bytes for a request it has never seen. Getting the field widths wrong
+    // would silently resize every driver's arguments.
+    constexpr u32 read_request = _IOR(0x42, struct termios);
+    check(_IOC_ARGUMENT_SIZE(read_request) == sizeof(struct termios),
+        "an encoded request carries its argument size");
+    check(_IOC_DIRECTION(read_request) == _IOC_READ, "an _IOR request reads back to userspace");
+
+    constexpr u32 write_request = _IOW(0x43, struct winsize);
+    check(_IOC_ARGUMENT_SIZE(write_request) == sizeof(struct winsize),
+        "a small argument encodes its size");
+    check(_IOC_DIRECTION(write_request) == _IOC_WRITE, "an _IOW request only reads from userspace");
+
+    constexpr u32 both = _IOWR(0x44, u64);
+    check(_IOC_DIRECTION(both) == (_IOC_READ | _IOC_WRITE), "an _IOWR request goes both ways");
+
+    constexpr u32 valueless = _IO(0x45);
+    check(_IOC_ARGUMENT_SIZE(valueless) == 0, "an _IO request has no pointer argument");
+
+    // The request number itself has to survive the encoding, or a driver's
+    // switch statement would never match.
+    check((read_request & 0xFFFF) == 0x42, "the request number survives encoding");
+
+    // A struct at the size limit must not overflow into the direction bits.
+    check(_IOC_ARGUMENT_SIZE(_IOC(_IOC_READ, 1, _IOC_SIZE_MAX)) == _IOC_SIZE_MAX,
+        "the maximum encodable size round-trips");
+}
+
 void test_modules()
 {
     auto const& api = ModuleLoader::kernel_api();
@@ -629,6 +662,7 @@ void run_module_selftests()
     s_checks_run = 0;
     s_checks_failed = 0;
 
+    test_ioctl_encoding();
     test_modules();
 
     if (s_checks_failed == 0) {

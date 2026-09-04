@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The only test that matters for an operating system is whether it still boots.
+# This builds the image and runs it, and fails if a shell prompt never appears.
+
+name: build and boot
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  boot:
+    name: build and boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld cmake ninja-build \
+            xorriso qemu-system-x86 \
+            grub-common grub-pc-bin grub-efi-amd64-bin
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build kernel, modules and userland
+        run: ninja -C build
+
+      - name: Boot it
+        # The runner has no KVM, so everything is emulated and slower than a
+        # developer machine. The default 30 s is comfortable locally and not
+        # here.
+        env:
+          SHITOS_QEMU_TIMEOUT: 120
+        run: ./tools/run-qemu.sh --expect-ok build/shit-os-2.iso
+
+      - name: Check the self tests all passed
+        # run-qemu only proves userland was reached. The assertion counts are
+        # the other half: a subsystem can come up degraded and still boot.
+        run: |
+          SHITOS_QEMU_TIMEOUT=120 ./tools/run-qemu.sh --expect-ok build/shit-os-2.iso \
+            > boot.log 2>&1 || true
+          echo "--- self test results ---"
+          grep -E 'selftest' boot.log || true
+          if grep -qE 'FAILED|panic|self tests failed' boot.log; then
+            echo "::error::a boot self test failed"
+            exit 1
+          fi
+          if ! grep -q 'checks passed' boot.log; then
+            echo "::error::no self test results in the boot log"
+            exit 1
+          fi
+
+      - name: Keep the image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shit-os-2-iso
+          path: |
+            build/shit-os-2.iso
+            build/kernel/kernel.elf
+            boot.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  format:
+    name: formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-format
+
+      - name: Check the tree matches .clang-format
+        run: |
+          # font8x16.h is generated; .clang-format-ignore covers it, but older
+          # clang-format releases ignore that file, so exclude it explicitly.
+          mapfile -t files < <(find kernel modules user include \
+            -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' \) \
+            ! -path '*/font8x16.h')
+          clang-format --dry-run --Werror "${files[@]}"
