@@ -6,6 +6,7 @@
 // the time this returns, the machine is a running operating system.
 
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/arch/x86_64/fpu.h>
 #include <kernel/arch/x86_64/gdt.h>
 #include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/arch/x86_64/io.h>
@@ -137,6 +138,7 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
     print_boot_summary(info);
 
     arch::cpu_initialize();
+    arch::fpu_initialize();
 
     // Descriptor tables before memory: a fault during the memory bring-up is
     // exactly when a working IDT is worth the most.

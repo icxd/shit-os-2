@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // shit os 2 -- the scheduler.
 
+#include <kernel/arch/x86_64/fpu.h>
 #include <kernel/arch/x86_64/gdt.h>
 #include <kernel/arch/x86_64/percpu.h>
 #include <kernel/arch/x86_64/pit.h>
@@ -117,6 +118,11 @@ InterruptFrame* Scheduler::switch_to_next(InterruptFrame* frame, bool requeue_cu
         // Save where this thread was, so resuming it later is just a matter of
         // handing this pointer back to isr.S.
         previous->m_frame = frame;
+        // The frame covers the general-purpose registers; the floating point
+        // and vector registers are a separate 512 bytes that nothing else
+        // preserves. The kernel is built -mno-sse, so nothing between here and
+        // the restore below can disturb what was just saved.
+        arch::fpu_save(previous->m_fpu_state);
         if (requeue_current && previous->m_state == ThreadState::Running) {
             previous->m_state = ThreadState::Ready;
             if (previous != s_idle_thread)
@@ -131,6 +137,9 @@ InterruptFrame* Scheduler::switch_to_next(InterruptFrame* frame, bool requeue_cu
     next->m_state = ThreadState::Running;
     next->m_quantum_remaining = DEFAULT_QUANTUM_TICKS;
     cpu->current_thread = next;
+
+    if (next != previous)
+        arch::fpu_restore(next->m_fpu_state);
 
     if (next != previous)
         ++cpu->context_switches;

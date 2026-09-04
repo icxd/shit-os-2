@@ -2,6 +2,7 @@
 // shit os 2 -- boot-time self tests.
 
 #include <kernel/arch/x86_64/cpu.h>
+#include <kernel/arch/x86_64/fpu.h>
 #include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/arch/x86_64/percpu.h>
 #include <kernel/arch/x86_64/pit.h>
@@ -372,6 +373,110 @@ void test_scheduler()
     check(Scheduler::thread_count() <= count_before, "finished threads get reaped");
 }
 
+// --- floating point across context switches -----------------------------
+//
+// The kernel is built with -mno-sse, so the compiler never touches these
+// registers and this is the only code in the kernel that does. That is what
+// makes the test meaningful: any corruption it sees came from a context
+// switch, not from the surrounding C++.
+
+void write_vector_registers(u64 pattern)
+{
+    asm volatile("movq %0, %%xmm0\n"
+                 "movq %0, %%xmm1\n"
+                 "movq %0, %%xmm7\n"
+                 "movq %0, %%xmm15\n" ::"r"(pattern));
+}
+
+bool vector_registers_hold(u64 pattern)
+{
+    u64 xmm0, xmm1, xmm7, xmm15;
+    asm volatile("movq %%xmm0, %0\n"
+                 "movq %%xmm1, %1\n"
+                 "movq %%xmm7, %2\n"
+                 "movq %%xmm15, %3\n"
+                 : "=r"(xmm0), "=r"(xmm1), "=r"(xmm7), "=r"(xmm15));
+    return xmm0 == pattern && xmm1 == pattern && xmm7 == pattern && xmm15 == pattern;
+}
+
+struct VectorWorker {
+    u64 pattern;
+    u32 iterations;
+    u32 corruptions;
+    bool finished;
+};
+
+VectorWorker s_vector_workers[3];
+
+void vector_worker(void* argument)
+{
+    auto* state = static_cast<VectorWorker*>(argument);
+
+    write_vector_registers(state->pattern);
+    for (u32 i = 0; i < 300; ++i) {
+        // Yielding here is the whole point: something else runs, loads its own
+        // values into the same registers, and this thread has to come back to
+        // find its own still there.
+        Scheduler::yield();
+        if (!vector_registers_hold(state->pattern)) {
+            ++state->corruptions;
+            write_vector_registers(state->pattern);
+        }
+        ++state->iterations;
+    }
+
+    __atomic_store_n(&state->finished, true, __ATOMIC_RELEASE);
+}
+
+void test_fpu_context_switching()
+{
+    // Distinct patterns so a thread that sees another's value is detected
+    // rather than coincidentally matching.
+    u64 const patterns[3] = { 0x1111111122222222ULL, 0x3333333344444444ULL, 0x5555555566666666ULL };
+
+    for (usize i = 0; i < 3; ++i) {
+        s_vector_workers[i] = { patterns[i], 0, 0, false };
+        auto thread
+            = Thread::create_kernel_thread("selftest-fpu", vector_worker, &s_vector_workers[i]);
+        check(!thread.is_error(), "creating a vector-register thread");
+        if (!thread.is_error())
+            Scheduler::enqueue(thread.value());
+    }
+
+    for (u32 attempts = 0; attempts < 400; ++attempts) {
+        bool all_done = true;
+        for (auto& worker : s_vector_workers)
+            all_done &= __atomic_load_n(&worker.finished, __ATOMIC_ACQUIRE);
+        if (all_done)
+            break;
+        Scheduler::sleep_ms(10);
+    }
+
+    u32 total_iterations = 0;
+    u32 total_corruptions = 0;
+    for (auto const& worker : s_vector_workers) {
+        total_iterations += worker.iterations;
+        total_corruptions += worker.corruptions;
+    }
+
+    check(total_iterations >= 900, "the vector threads all ran to completion");
+    check(total_corruptions == 0, "xmm registers survive a context switch");
+
+    if (total_corruptions != 0) {
+        klog(LOG_ERROR, "selftest", "  %u of %u yields lost vector state", total_corruptions,
+            total_iterations);
+    }
+
+    // A new thread must not inherit whatever the creating thread was holding.
+    alignas(arch::FPU_STATE_ALIGNMENT) u8 fresh[arch::FPU_STATE_SIZE];
+    write_vector_registers(0xDEADBEEFDEADBEEFULL);
+    arch::fpu_initialize_state(fresh);
+    // MXCSR sits at offset 24 of the FXSAVE area; the default masks every
+    // exception, so an overflow in a user program is a value, not a fault.
+    u32 const mxcsr = *reinterpret_cast<u32 const*>(fresh + 24);
+    check((mxcsr & 0x1F80) == 0x1F80, "a fresh FPU state masks all SIMD exceptions");
+}
+
 // --- filesystems --------------------------------------------------------
 
 void test_vfs()
@@ -698,6 +803,7 @@ void run_scheduler_selftests()
     s_checks_failed = 0;
 
     test_scheduler();
+    test_fpu_context_switching();
 
     if (s_checks_failed == 0) {
         klog(LOG_INFO, "selftest", "%zu scheduler checks passed", s_checks_run);

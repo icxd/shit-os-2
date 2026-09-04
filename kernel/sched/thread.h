@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <kernel/arch/x86_64/fpu.h>
 #include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/lib/error.h>
 #include <kernel/lib/intrusive_list.h>
@@ -65,6 +66,8 @@ public:
     InterruptFrame* frame() const { return m_frame; }
     void set_frame(InterruptFrame* frame) { m_frame = frame; }
 
+    void* fpu_state() { return m_fpu_state; }
+
     u64 kernel_stack_top() const { return m_kernel_stack_top; }
 
     // Nodes for the lists a thread can be in. A thread is in at most one of
@@ -93,6 +96,11 @@ private:
     u8* m_kernel_stack { nullptr };
     u64 m_kernel_stack_top { 0 };
     bool m_owns_kernel_stack { false };
+
+    // x87, MMX and SSE state. Preserved across every switch because userland
+    // keeps live values here -- clang uses xmm for struct copies even in code
+    // that does no arithmetic.
+    alignas(arch::FPU_STATE_ALIGNMENT) u8 m_fpu_state[arch::FPU_STATE_SIZE] {};
 
     u32 m_quantum_remaining { DEFAULT_QUANTUM_TICKS };
     u64 m_cpu_ticks { 0 };

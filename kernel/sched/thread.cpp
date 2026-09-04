@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // shit os 2 -- threads.
 
+#include <kernel/arch/x86_64/fpu.h>
 #include <kernel/arch/x86_64/gdt.h>
 #include <kernel/dev/console.h>
 #include <kernel/lib/new.h>
@@ -101,6 +102,7 @@ ErrorOr<Thread*> Thread::adopt_current_context(char const* name)
     thread->m_tid = s_next_tid++;
     strncpy(thread->m_name, name, THREAD_NAME_MAX - 1);
     thread->m_state = ThreadState::Running;
+    arch::fpu_initialize_state(thread->m_fpu_state);
 
     // This context is already running on the boot stack from boot.S. It does
     // not own that stack and must never try to free it.
@@ -132,6 +134,9 @@ ErrorOr<Thread*> Thread::allocate_with_stack(char const* name, InterruptFrame*& 
     thread->m_kernel_stack = stack;
     thread->m_owns_kernel_stack = true;
     thread->m_kernel_stack_top = reinterpret_cast<u64>(stack) + KERNEL_STACK_SIZE;
+
+    // A clean FPU, not whatever the creating thread was holding.
+    arch::fpu_initialize_state(thread->m_fpu_state);
 
     u64 const stack_top = align_down<u64>(thread->m_kernel_stack_top, 16);
     frame_out = reinterpret_cast<InterruptFrame*>(stack_top - sizeof(InterruptFrame));

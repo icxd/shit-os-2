@@ -3,6 +3,7 @@
 set(KERNEL_SOURCES
     arch/x86_64/boot.S
     arch/x86_64/cpu.cpp
+    arch/x86_64/fpu.cpp
     arch/x86_64/gdt.cpp
     arch/x86_64/idt.cpp
     arch/x86_64/isr.S
