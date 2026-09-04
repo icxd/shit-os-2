@@ -45,4 +45,11 @@ void kvlog(LogLevel level, char const* subsystem, char const* format, va_list ar
 
 void console_set_min_level(LogLevel level);
 
+// Colour is on by default. Both sinks understand ANSI -- the serial port
+// because whatever is reading it does, and the framebuffer console because it
+// parses SGR itself -- so there is nowhere for the escapes to leak as text.
+// Turning it off exists for a log being piped somewhere that does not.
+void console_set_color_enabled(bool enabled);
+bool console_color_enabled();
+
 } // namespace kernel

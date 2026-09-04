@@ -81,12 +81,127 @@ u32 FramebufferConsole::pack(Rgb color) const
 
 void FramebufferConsole::set_colors(Rgb foreground, Rgb background)
 {
+    m_default_foreground = foreground;
+    m_default_background = background;
     m_foreground = foreground;
     m_background = background;
-    if (m_format == boot::FramebufferFormat::Rgb) {
-        m_packed_foreground = pack(foreground);
-        m_packed_background = pack(background);
+    m_bold = false;
+    repack_colors();
+}
+
+void FramebufferConsole::repack_colors()
+{
+    if (m_format != boot::FramebufferFormat::Rgb)
+        return;
+    m_packed_foreground = pack(m_foreground);
+    m_packed_background = pack(m_background);
+}
+
+// --- ANSI escape handling -------------------------------------------------
+//
+// Only SGR is acted on, because only colour is wanted here. Everything else in
+// a CSI sequence is recognised and dropped: a console that ignores a cursor
+// move still reads correctly, one that prints "[2J" into the middle of a line
+// does not.
+
+void FramebufferConsole::apply_sgr()
+{
+    // A bare ESC[m means ESC[0m.
+    if (m_parameter_count == 0) {
+        m_parameter_count = 1;
+        m_parameters[0] = 0;
     }
+
+    for (usize i = 0; i < m_parameter_count; ++i) {
+        u32 const parameter = m_parameters[i];
+
+        if (parameter == 0) {
+            m_foreground = m_default_foreground;
+            m_background = m_default_background;
+            m_bold = false;
+        } else if (parameter == 1) {
+            // Bold is the bright half of the palette, which is the convention
+            // every terminal of this era settled on.
+            m_bold = true;
+            for (u8 index = 0; index < 8; ++index) {
+                if (m_foreground.r == ANSI_PALETTE[index].r
+                    && m_foreground.g == ANSI_PALETTE[index].g
+                    && m_foreground.b == ANSI_PALETTE[index].b) {
+                    m_foreground = ANSI_PALETTE[index + 8];
+                    break;
+                }
+            }
+        } else if (parameter == 22) {
+            m_bold = false;
+        } else if (parameter >= 30 && parameter <= 37) {
+            m_foreground = ANSI_PALETTE[(parameter - 30) + (m_bold ? 8 : 0)];
+        } else if (parameter == 39) {
+            m_foreground = m_default_foreground;
+        } else if (parameter >= 40 && parameter <= 47) {
+            m_background = ANSI_PALETTE[parameter - 40];
+        } else if (parameter == 49) {
+            m_background = m_default_background;
+        } else if (parameter >= 90 && parameter <= 97) {
+            m_foreground = ANSI_PALETTE[(parameter - 90) + 8];
+        } else if (parameter >= 100 && parameter <= 107) {
+            m_background = ANSI_PALETTE[(parameter - 100) + 8];
+        }
+    }
+
+    repack_colors();
+}
+
+bool FramebufferConsole::consume_escape(char c)
+{
+    switch (m_escape) {
+    case EscapeState::None:
+        if (c != '\033')
+            return false;
+        m_escape = EscapeState::Escape;
+        return true;
+
+    case EscapeState::Escape:
+        if (c == '[') {
+            m_escape = EscapeState::Csi;
+            m_parameter_count = 0;
+            m_parameters[0] = 0;
+            return true;
+        }
+        // Not a CSI. Two-character sequences are not supported, so drop it
+        // rather than printing half of one.
+        m_escape = EscapeState::None;
+        return true;
+
+    case EscapeState::Csi:
+        if (c >= '0' && c <= '9') {
+            if (m_parameter_count == 0)
+                m_parameter_count = 1;
+            u32& parameter = m_parameters[m_parameter_count - 1];
+            // Clamp rather than overflow: a hostile or corrupt sequence must
+            // not be able to wrap this into a valid colour.
+            if (parameter < 100000)
+                parameter = parameter * 10 + static_cast<u32>(c - '0');
+            return true;
+        }
+        if (c == ';') {
+            if (m_parameter_count < MAX_SGR_PARAMETERS)
+                m_parameters[m_parameter_count++] = 0;
+            return true;
+        }
+        // Any final byte ends the sequence; 'm' is the only one that does
+        // something.
+        if (c >= '@' && c <= '~') {
+            if (c == 'm')
+                apply_sgr();
+            m_escape = EscapeState::None;
+            return true;
+        }
+        // Intermediate bytes and anything unexpected: keep swallowing until a
+        // final byte arrives, so a malformed sequence cannot leak text.
+        return true;
+    }
+
+    return false;
 }
 
 void FramebufferConsole::draw_pixel(u32 x, u32 y, u32 packed)
@@ -178,6 +293,9 @@ void FramebufferConsole::advance_cursor()
 void FramebufferConsole::write_char(char c)
 {
     if (m_format == boot::FramebufferFormat::None)
+        return;
+
+    if (consume_escape(c))
         return;
 
     switch (c) {
