@@ -35,6 +35,19 @@
  */
 #define O_SETFL_MASK (O_APPEND | O_NONBLOCK)
 
+/* --- the directory-relative calls ----------------------------------------
+ *
+ * A path is resolved against the directory a descriptor refers to rather than
+ * against the working directory, which is how a recursive walk descends
+ * without rebuilding a full path at every step -- and without racing a rename
+ * of a directory it has already passed.
+ */
+#define AT_FDCWD (-100)
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_REMOVEDIR 0x200
+#define AT_SYMLINK_FOLLOW 0x400
+#define AT_EACCESS 0x200
+
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2

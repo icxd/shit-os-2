@@ -967,7 +967,7 @@ ErrorOr<u64> sys_clock_gettime(InterruptFrame&, u64 clock_id, u64 pointer, u64, 
     default: return Error::from_errno(EINVAL);
     }
 
-    struct shitos_timespec value = {
+    struct timespec value = {
         .tv_sec = static_cast<i64>(nanoseconds / 1'000'000'000ull),
         .tv_nsec = static_cast<i64>(nanoseconds % 1'000'000'000ull),
     };
@@ -1133,6 +1133,147 @@ ErrorOr<u64> sys_sigprocmask(
 ErrorOr<u64> sys_umask(InterruptFrame&, u64 mask, u64, u64, u64, u64, u64)
 {
     return static_cast<u64>(Process::current()->set_umask(static_cast<u32>(mask)));
+}
+
+/*
+ * Resolves a path against a directory descriptor, which is what the whole `at`
+ * family is for: a recursive walk descends without rebuilding a full path at
+ * every step, and without racing a rename of a directory it has already
+ * passed. AT_FDCWD means the working directory, as always.
+ */
+ErrorOr<fs::Inode*> base_for_directory_fd(int directory)
+{
+    if (directory == AT_FDCWD)
+        return Process::current()->working_directory();
+
+    auto* description = TRY(description_for(directory));
+    auto& inode = description->inode();
+    if (!inode.is_directory())
+        return Error::from_errno(ENOTDIR);
+    return &inode;
+}
+
+ErrorOr<u64> sys_openat(
+    InterruptFrame&, u64 directory, u64 path_pointer, u64 flags, u64 mode, u64, u64)
+{
+    char path[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
+
+    auto* process = Process::current();
+    auto* base = TRY(base_for_directory_fd(static_cast<int>(directory)));
+    auto const permissions = static_cast<u32>(mode) & ~process->umask();
+
+    auto* description = TRY(fs::open(path, static_cast<int>(flags), permissions, base));
+
+    auto fd = process->allocate_descriptor(description);
+    if (fd.is_error()) {
+        fs::release_description(description);
+        return fd.error();
+    }
+    if ((flags & O_CLOEXEC) != 0)
+        (void)process->set_descriptor_close_on_exec(fd.value(), true);
+
+    return static_cast<u64>(fd.value());
+}
+
+ErrorOr<u64> sys_fstatat(
+    InterruptFrame&, u64 directory, u64 path_pointer, u64 stat_pointer, u64, u64, u64)
+{
+    char path[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
+
+    auto* base = TRY(base_for_directory_fd(static_cast<int>(directory)));
+    auto* inode = TRY(fs::resolve(path, base));
+
+    struct stat status;
+    TRY(inode->stat(status));
+    TRY(copy_to_user(stat_pointer, &status, sizeof(status)));
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_unlinkat(
+    InterruptFrame&, u64 directory, u64 path_pointer, u64 flags, u64, u64, u64)
+{
+    char path[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
+
+    auto* base = TRY(base_for_directory_fd(static_cast<int>(directory)));
+
+    char name[fs::FILENAME_MAX_LENGTH];
+    auto* parent = TRY(fs::resolve_parent(path, base, name));
+    if (parent->filesystem() != nullptr && parent->filesystem()->is_read_only())
+        return Error::from_errno(EROFS);
+
+    auto* target = TRY(parent->lookup(name));
+    bool const wants_directory = (flags & AT_REMOVEDIR) != 0;
+    if (wants_directory && !target->is_directory())
+        return Error::from_errno(ENOTDIR);
+    if (!wants_directory && target->is_directory())
+        return Error::from_errno(EISDIR);
+
+    TRY(parent->unlink(name));
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_mkdirat(InterruptFrame&, u64 directory, u64 path_pointer, u64 mode, u64, u64, u64)
+{
+    char path[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
+
+    auto* process = Process::current();
+    auto* base = TRY(base_for_directory_fd(static_cast<int>(directory)));
+
+    if (!fs::resolve(path, base).is_error())
+        return Error::from_errno(EEXIST);
+
+    char name[fs::FILENAME_MAX_LENGTH];
+    auto* parent = TRY(fs::resolve_parent(path, base, name));
+    if (parent->filesystem() != nullptr && parent->filesystem()->is_read_only())
+        return Error::from_errno(EROFS);
+
+    TRY(parent->create(name, fs::InodeType::Directory, static_cast<u32>(mode) & ~process->umask()));
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_fchmodat(InterruptFrame&, u64 directory, u64 path_pointer, u64 mode, u64, u64, u64)
+{
+    char path[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
+
+    auto* base = TRY(base_for_directory_fd(static_cast<int>(directory)));
+    auto* inode = TRY(fs::resolve(path, base));
+    if (inode->filesystem() != nullptr && inode->filesystem()->is_read_only())
+        return Error::from_errno(EROFS);
+
+    inode->set_mode(static_cast<u32>(mode) & 07777);
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_ftruncate(InterruptFrame&, u64 fd, u64 length, u64, u64, u64, u64)
+{
+    auto* description = TRY(description_for(static_cast<int>(fd)));
+    if (!description->is_writable())
+        return Error::from_errno(EBADF);
+    if (static_cast<i64>(length) < 0)
+        return Error::from_errno(EINVAL);
+    TRY(description->inode().truncate(length));
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_chmod(InterruptFrame&, u64 path_pointer, u64 mode, u64, u64, u64, u64)
+{
+    char path[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
+
+    auto* inode = TRY(fs::resolve(path, Process::current()->working_directory()));
+    if (inode->filesystem() != nullptr && inode->filesystem()->is_read_only())
+        return Error::from_errno(EROFS);
+
+    // Nothing checks a mode bit yet, so this only decides what gets recorded.
+    // Recording the wrong thing now means every file in the tree is wrong when
+    // something finally does check.
+    inode->set_mode(static_cast<u32>(mode) & 07777);
+    return static_cast<u64>(0);
 }
 
 // --- extensions ---------------------------------------------------------
@@ -1334,6 +1475,13 @@ SyscallHandler const POSIX_SYSCALLS[SYS_MAX_POSIX] = {
     [SYS_poll] = sys_poll,
     [SYS_sigprocmask] = sys_sigprocmask,
     [SYS_umask] = sys_umask,
+    [SYS_ftruncate] = sys_ftruncate,
+    [SYS_chmod] = sys_chmod,
+    [SYS_openat] = sys_openat,
+    [SYS_fstatat] = sys_fstatat,
+    [SYS_unlinkat] = sys_unlinkat,
+    [SYS_mkdirat] = sys_mkdirat,
+    [SYS_fchmodat] = sys_fchmodat,
 };
 
 #pragma clang diagnostic pop

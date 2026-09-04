@@ -14,8 +14,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <poll.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -570,6 +572,65 @@ static void test_signal_return(void)
     sigaction(SIGTERM, &previous, NULL);
 }
 
+/* --- printf length modifiers ---------------------------------------------
+ *
+ * A length modifier the formatter does not recognise is not a cosmetic
+ * problem. It never sees the conversion that follows it, so it consumes no
+ * argument, and every later conversion in the same call reads the wrong one.
+ * sbase's du printed a block count with %jd and the %s after it took that
+ * number as a pointer; the crash was three frames away from the cause.
+ */
+
+static void check_format(const char* what, const char* rendered, const char* expected)
+{
+    ++s_checks;
+    if (strcmp(rendered, expected) != 0) {
+        ++s_failures;
+        printf("  FAIL %s: expected [%s], got [%s]\n", what, expected, rendered);
+    }
+}
+
+static void test_printf_lengths(void)
+{
+    char out[128];
+
+    snprintf(out, sizeof(out), "%d", 42);
+    check_format("%d", out, "42");
+    snprintf(out, sizeof(out), "%ld", 42L);
+    check_format("%ld", out, "42");
+    snprintf(out, sizeof(out), "%lld", 42LL);
+    check_format("%lld", out, "42");
+    snprintf(out, sizeof(out), "%zu", (size_t)42);
+    check_format("%zu", out, "42");
+    snprintf(out, sizeof(out), "%jd", (intmax_t)-42);
+    check_format("%jd", out, "-42");
+    snprintf(out, sizeof(out), "%ju", (uintmax_t)42);
+    check_format("%ju", out, "42");
+    snprintf(out, sizeof(out), "%td", (ptrdiff_t)-42);
+    check_format("%td", out, "-42");
+    snprintf(out, sizeof(out), "%hd", (short)42);
+    check_format("%hd", out, "42");
+    snprintf(out, sizeof(out), "%hhd", (signed char)42);
+    check_format("%hhd", out, "42");
+
+    /* The failure that matters: a conversion after an unrecognised modifier
+     * must still read its own argument. */
+    snprintf(out, sizeof(out), "%jd\t%s", (intmax_t)7, "after");
+    check_format("%jd then %s", out, "7\tafter");
+    snprintf(out, sizeof(out), "%zu:%s:%d", (size_t)1, "mid", 2);
+    check_format("%zu then %s then %d", out, "1:mid:2");
+    snprintf(out, sizeof(out), "%ju %ju", (uintmax_t)1, (uintmax_t)2);
+    check_format("two %ju in a row", out, "1 2");
+
+    /* Widths and precisions alongside a modifier. */
+    snprintf(out, sizeof(out), "%8jd|", (intmax_t)42);
+    check_format("%8jd", out, "      42|");
+    snprintf(out, sizeof(out), "%-8ju|", (uintmax_t)42);
+    check_format("%-8ju", out, "42      |");
+    snprintf(out, sizeof(out), "%08jx", (uintmax_t)0xABCD);
+    check_format("%08jx", out, "0000abcd");
+}
+
 /* --- poll and select ---------------------------------------------------- */
 
 static void test_poll(void)
@@ -697,6 +758,7 @@ int main(int argc, char** argv, char** envp)
     test_terminal_ownership();
     test_sessions();
     test_signal_return();
+    test_printf_lengths();
     test_poll();
     test_select();
 

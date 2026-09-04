@@ -68,6 +68,24 @@ int snprintf(char* buffer, size_t size, const char* format, ...)
     __attribute__((format(printf, 3, 4)));
 int vprintf(const char* format, va_list args);
 int vfprintf(FILE* stream, const char* format, va_list args);
+
+/*
+ * Reads a line, growing the caller's buffer as needed. The interface is
+ * awkward -- it writes back through both pointers -- and it is also the only
+ * one in the C library that reads a line of unknown length without the caller
+ * guessing, which is why everything uses it.
+ */
+ssize_t getdelim(char** line, size_t* capacity, int delimiter, FILE* stream);
+ssize_t getline(char** line, size_t* capacity, FILE* stream);
+
+/* A pipe to a command, run by the shell. */
+FILE* fdopen(int fd, const char* mode);
+FILE* popen(const char* command, const char* mode);
+int pclose(FILE* stream);
+
+/* A stream over a fixed buffer, so code written against FILE* can read from
+ * memory without a temporary file. */
+FILE* fmemopen(void* buffer, size_t size, const char* mode);
 int vsnprintf(char* buffer, size_t size, const char* format, va_list args);
 
 void perror(const char* prefix);

@@ -13,7 +13,15 @@
 /* Since boot. Never goes backwards; what a timeout should be measured on. */
 #define CLOCK_MONOTONIC 1
 
-struct shitos_timespec {
+/*
+ * The one definition, shared by the kernel and the libc. struct stat carries
+ * these, and software assigns those members to a struct timespec it declared
+ * itself -- so the two have to be the same type, not merely the same shape.
+ */
+#ifndef __shitos_timespec_defined
+#define __shitos_timespec_defined
+struct timespec {
     i64 tv_sec;
     i64 tv_nsec;
 };
+#endif

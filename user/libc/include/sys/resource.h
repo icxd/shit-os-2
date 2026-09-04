@@ -63,4 +63,12 @@ int getrlimit(int resource, struct rlimit* limit);
 int setrlimit(int resource, const struct rlimit* limit);
 int getrusage(int who, struct rusage* usage);
 
+/* Nothing is scheduled by priority. Declared here as well as in <unistd.h>
+ * because POSIX puts them here and that is where software looks. */
+#define PRIO_PROCESS 0
+#define PRIO_PGRP 1
+#define PRIO_USER 2
+int getpriority(int which, id_t who);
+int setpriority(int which, id_t who, int value);
+
 #endif /* _SYS_RESOURCE_H */

@@ -30,8 +30,13 @@ inline constexpr usize PROCESS_NAME_MAX = 32;
 // grows up; the stack starts near the top of the user half and grows down.
 inline constexpr u64 USER_STACK_TOP = 0x00007FFFFFFFF000ULL;
 inline constexpr usize USER_STACK_SIZE = 64 * 1024;
-inline constexpr usize MAX_ARGUMENT_BYTES = 4096;
-inline constexpr usize MAX_ARGUMENTS = 64;
+// What argv and envp together may weigh, and how many entries they may have.
+// The real ceiling is the user stack they are copied onto; these are set well
+// under it. 4096 bytes was the first guess and it is too small for a shell
+// expanding a glob -- xargs reserves exactly that much for the environment and
+// concluded it had no room for anything at all.
+inline constexpr usize MAX_ARGUMENT_BYTES = 32 * 1024;
+inline constexpr usize MAX_ARGUMENTS = 256;
 
 struct FileDescriptorEntry {
     fs::FileDescription* description { nullptr };

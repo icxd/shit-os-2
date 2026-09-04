@@ -14,4 +14,9 @@ int closedir(DIR* directory);
 void rewinddir(DIR* directory);
 int dirfd(DIR* directory);
 
+/* Adopts an already-open descriptor. The DIR takes ownership: closedir is
+ * what closes it from then on. */
+DIR* fdopendir(int fd);
+int dirfd(DIR* directory);
+
 #endif /* _DIRENT_H */

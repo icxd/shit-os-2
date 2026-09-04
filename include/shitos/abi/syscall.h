@@ -66,6 +66,13 @@
 #define SYS_poll 40
 #define SYS_sigprocmask 41
 #define SYS_umask 42
+#define SYS_ftruncate 43
+#define SYS_chmod 44
+#define SYS_openat 45
+#define SYS_fstatat 46
+#define SYS_unlinkat 47
+#define SYS_mkdirat 48
+#define SYS_fchmodat 49
 
 #define SYS_EXT_BASE 0x100
 
@@ -78,7 +85,7 @@
 /* Halt, reboot or power off the machine. */
 #define SYS_shitos_shutdown (SYS_EXT_BASE + 3)
 
-#define SYS_MAX_POSIX 43
+#define SYS_MAX_POSIX 50
 #define SYS_MAX_EXT 4
 
 /* --- SYS_shitos_sysinfo ------------------------------------------------- */

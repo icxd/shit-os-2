@@ -33,6 +33,8 @@ set(LIBC_SOURCES
     libc/src/stdlib.c
     libc/src/strtod.c
     libc/src/poll.c
+    libc/src/posix.c
+    libc/src/posix_files.c
     libc/src/regex.c
     libc/src/pwd.c
     libc/src/signal_sets.c

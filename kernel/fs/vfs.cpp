@@ -27,6 +27,20 @@ usize s_mount_count = 0;
 FileSystem* s_root_filesystem = nullptr;
 SpinLock s_mount_lock;
 
+// The inverse of follow_mount: given the root of a mounted filesystem, the
+// directory it was mounted over. Walking *up* out of a mount needs this, or
+// the walk stops at a root with no parent and cannot say where it is.
+Inode* mount_point_of(Inode* filesystem_root)
+{
+    for (usize i = 0; i < s_mount_count; ++i) {
+        if (s_mounts[i].covered == nullptr)
+            continue; // the root mount is covered by nothing
+        if (&s_mounts[i].filesystem->root() == filesystem_root)
+            return s_mounts[i].covered;
+    }
+    return nullptr;
+}
+
 // If `inode` has a filesystem mounted over it, the caller wants that
 // filesystem's root instead.
 Inode* follow_mount(Inode* inode)
@@ -533,8 +547,22 @@ ErrorOr<usize> absolute_path_of(Inode& inode, char* buffer, usize capacity)
 
     while (current != nullptr && current != root) {
         Inode* parent = current->parent();
-        if (parent == nullptr)
-            break;
+
+        // The root of a mounted filesystem has no parent of its own. Its name
+        // belongs to the directory it was mounted over, so step across and
+        // carry on from there -- otherwise getcwd fails anywhere inside a
+        // mount, which for this system means anywhere writable.
+        if (parent == nullptr) {
+            Inode* const covered = mount_point_of(current);
+            if (covered == nullptr)
+                break;
+            current = covered;
+            if (current == root)
+                break;
+            parent = current->parent();
+            if (parent == nullptr)
+                break;
+        }
 
         // Find this inode's name by asking its parent to enumerate.
         char name[FILENAME_MAX_LENGTH] = {};

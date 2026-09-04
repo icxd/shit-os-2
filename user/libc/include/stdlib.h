@@ -21,6 +21,34 @@ long atol(const char* s);
 long strtol(const char* s, char** end, int base);
 unsigned long strtoul(const char* s, char** end, int base);
 long long strtoll(const char* s, char** end, int base);
+
+typedef struct {
+    int quot, rem;
+} div_t;
+typedef struct {
+    long quot, rem;
+} ldiv_t;
+typedef struct {
+    long long quot, rem;
+} lldiv_t;
+
+div_t div(int numerator, int denominator);
+ldiv_t ldiv(long numerator, long denominator);
+lldiv_t lldiv(long long numerator, long long denominator);
+long long llabs(long long value);
+
+int setenv(const char* name, const char* value, int overwrite);
+int unsetenv(const char* name);
+int putenv(char* assignment);
+
+/* Both replace the trailing XXXXXX in the template, in place. */
+int mkstemp(char* template_path);
+char* mkdtemp(char* template_path);
+
+/* Resolves . and .. and collapses slashes. There are no symbolic links to
+ * follow, so what is left is purely textual -- but the path is still checked
+ * to exist, which is the half of realpath callers actually depend on. */
+char* realpath(const char* path, char* resolved);
 unsigned long long strtoull(const char* s, char** end, int base);
 
 char* getenv(const char* name);

@@ -16,4 +16,8 @@ int creat(const char* path, mode_t mode);
  */
 int fcntl(int fd, int command, ...);
 
+/* Only AT_FDCWD, for the same reason as the rest of the `at` family: there is
+ * no way to resolve a path against an arbitrary open directory. */
+int openat(int directory, const char* path, int flags, ...);
+
 #endif /* _FCNTL_H */

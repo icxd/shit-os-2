@@ -26,6 +26,7 @@ OBJCOPY="${OBJCOPY:-llvm-objcopy}"
 # The renaming catches undefined symbols too, so the arena and every libc call
 # stdlib.c makes are satisfied here under their prefixed names.
 cat > "$WORK/host-stubs.c" <<'STUBS'
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,52 @@ size_t shitos_strlen(const char* s) { return strlen(s); }
 int shitos_strcmp(const char* a, const char* b) { return strcmp(a, b); }
 int shitos_strncmp(const char* a, const char* b, size_t n) { return strncmp(a, b, n); }
 void shitos__exit(int status) { exit(status); }
+/*
+ * mkstemp/mkdtemp reach for the filesystem. The allocator does not, so these
+ * only have to link -- they fail the same way every time and no case here
+ * calls them.
+ */
+int shitos_mkdir(const char* path, unsigned int mode)
+{
+    (void)path;
+    (void)mode;
+    s_errno = EEXIST;
+    return -1;
+}
+
+int shitos_open(const char* path, int flags, ...)
+{
+    (void)path;
+    (void)flags;
+    s_errno = EEXIST;
+    return -1;
+}
+
+int shitos_getpid(void) { return 1; }
+
+char* shitos_strchr(const char* s, int c) { return strchr(s, c); }
+
+/*
+ * Not forwarded to the host: whatever this returns may be handed back to the
+ * allocator under test, so it has to come out of the allocator under test.
+ */
+void* shitos_malloc(size_t size);
+char* shitos_strndup(const char* s, size_t limit);
+char* shitos_strdup(const char* s) { return shitos_strndup(s, (size_t)-1); }
+char* shitos_strndup(const char* s, size_t limit)
+{
+    size_t length = 0;
+    while (length < limit && s[length] != '\0')
+        ++length;
+
+    char* const copy = shitos_malloc(length + 1);
+    if (copy == NULL)
+        return NULL;
+
+    memcpy(copy, s, length);
+    copy[length] = '\0';
+    return copy;
+}
 long shitos_write(int fd, const void* buffer, unsigned long count)
 {
     return (long)fwrite(buffer, 1, count, fd == 2 ? stderr : stdout);

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define FLAG_READABLE 0x01
@@ -172,6 +173,16 @@ static int refill(FILE* stream)
     if (!(stream->flags & FLAG_READABLE) || stream->buffer == 0)
         return EOF;
 
+    /* An fmemopen stream has no descriptor behind it: its buffer was handed
+     * over whole and there is nowhere to get more from. Reading fd -1 would
+     * report EBADF and set the error flag, which is how sbase's grep came to
+     * announce a read error on a pattern it had been given on the command
+     * line. */
+    if (stream->fd < 0) {
+        stream->flags |= FLAG_EOF;
+        return EOF;
+    }
+
     ssize_t count = read(stream->fd, stream->buffer, stream->capacity);
     if (count < 0) {
         stream->flags |= FLAG_ERROR;
@@ -304,12 +315,98 @@ FILE* fopen(const char* path, const char* mode)
     return stream;
 }
 
+/* Wraps a descriptor the caller already has. The stream takes ownership: it
+ * is fclose that closes the descriptor from here on. */
+FILE* fdopen(int fd, const char* mode)
+{
+    if (fd < 0 || !mode) {
+        errno = EINVAL;
+        return 0;
+    }
+
+    int stream_flags = 0;
+    switch (mode[0]) {
+    case 'r': stream_flags = FLAG_READABLE | ((mode[1] == '+') ? FLAG_WRITABLE : 0); break;
+    case 'w':
+    case 'a': stream_flags = FLAG_WRITABLE | ((mode[1] == '+') ? FLAG_READABLE : 0); break;
+    default: errno = EINVAL; return 0;
+    }
+
+    FILE* stream = 0;
+    for (int i = 0; i < MAX_STREAMS; ++i) {
+        if (s_streams[i].flags == 0) {
+            stream = &s_streams[i];
+            break;
+        }
+    }
+    if (!stream) {
+        errno = EMFILE;
+        return 0;
+    }
+
+    stream->fd = fd;
+    stream->flags = stream_flags;
+    stream->buffer = malloc(BUFSIZ);
+    stream->capacity = stream->buffer ? BUFSIZ : 0;
+    if (!stream->buffer)
+        stream->flags |= FLAG_UNBUFFERED;
+    stream->pending = 0;
+    stream->available = 0;
+    stream->position = 0;
+    stream->unget = 0;
+    return stream;
+}
+
+/*
+ * A stream over a caller's buffer. There is no descriptor behind it, which the
+ * rest of stdio would notice the moment it tried to refill -- so the buffer is
+ * handed over whole, marked as already read, and the fd is -1. A read past the
+ * end sees no more bytes and reports end of file, which is exactly right; a
+ * write is refused, because growing somebody else's buffer is not ours to do.
+ */
+FILE* fmemopen(void* buffer, size_t size, const char* mode)
+{
+    if (!buffer || !mode || mode[0] != 'r') {
+        /* Only reading. A writable fmemopen has to track a separate length and
+         * NUL-terminate on flush, and nothing here wants one. */
+        errno = mode && mode[0] != 'r' ? ENOSYS : EINVAL;
+        return 0;
+    }
+
+    FILE* stream = 0;
+    for (int i = 0; i < MAX_STREAMS; ++i) {
+        if (s_streams[i].flags == 0) {
+            stream = &s_streams[i];
+            break;
+        }
+    }
+    if (!stream) {
+        errno = EMFILE;
+        return 0;
+    }
+
+    stream->fd = -1;
+    stream->flags = FLAG_READABLE | FLAG_STATIC;
+    stream->buffer = buffer;
+    stream->capacity = size;
+    stream->pending = 0;
+    stream->available = size;
+    stream->position = 0;
+    stream->unget = 0;
+    return stream;
+}
+
 int fclose(FILE* stream)
 {
     if (!stream)
         return EOF;
     fflush(stream);
-    int const result = close(stream->fd);
+    /* An fmemopen stream has no descriptor and does not own its buffer. */
+    int const result = stream->fd >= 0 ? close(stream->fd) : 0;
+    if (stream->fd < 0) {
+        memset(stream, 0, sizeof(*stream));
+        return result;
+    }
     if (!(stream->flags & FLAG_STATIC)) {
         free(stream->buffer);
         memset(stream, 0, sizeof(*stream));
@@ -687,9 +784,27 @@ static int format_into(Sink* sink, const char* format, va_list args)
             }
         }
 
+        /*
+         * Every length modifier has to be recognised even when it changes
+         * nothing, because skipping it is not harmless: the conversion after
+         * it is then never seen, the argument is never consumed, and every
+         * later conversion reads the wrong one. sbase's du printed a block
+         * count with %jd and the following %s took that number as a pointer.
+         */
         int length_modifier = 0; /* 0 int, 1 long, 2 long long, 3 size_t */
         if (*p == 'z') {
             length_modifier = 3;
+            ++p;
+        } else if (*p == 'j') {
+            /* intmax_t, which is long here. */
+            length_modifier = 2;
+            ++p;
+        } else if (*p == 't') {
+            /* ptrdiff_t, likewise. */
+            length_modifier = 1;
+            ++p;
+        } else if (*p == 'L') {
+            /* long double, which is double here. */
             ++p;
         } else if (*p == 'l') {
             length_modifier = 1;
@@ -1064,4 +1179,158 @@ int remove(const char* path)
 int rename(const char* from, const char* to)
 {
     return (int)__syscall_return(__syscall2(SYS_rename, (long)from, (long)to));
+}
+
+/* --- reading a line of unknown length ------------------------------------
+ *
+ * The interface writes back through both pointers and expects the caller to
+ * free what it left there. It is awkward, and it is also the only way in the C
+ * library to read a line without guessing how long it might be, which is why
+ * everything that reads text uses it.
+ */
+
+ssize_t getdelim(char** line, size_t* capacity, int delimiter, FILE* stream)
+{
+    if (!line || !capacity || !stream) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* A null buffer means "allocate one", and so does a zero capacity -- a
+     * caller is allowed to hand back a pointer it never sized. */
+    if (!*line || *capacity == 0) {
+        size_t const initial = 128;
+        char* const allocated = realloc(*line, initial);
+        if (!allocated)
+            return -1;
+        *line = allocated;
+        *capacity = initial;
+    }
+
+    size_t written = 0;
+    for (;;) {
+        int const c = fgetc(stream);
+        if (c == EOF) {
+            /* End of input with nothing read is the end; with something read
+             * it is a final line without a delimiter. */
+            if (written == 0)
+                return -1;
+            break;
+        }
+
+        /* Always leave room for the terminator. */
+        if (written + 1 >= *capacity) {
+            size_t const grown = *capacity * 2;
+            char* const bigger = realloc(*line, grown);
+            if (!bigger)
+                return -1;
+            *line = bigger;
+            *capacity = grown;
+        }
+
+        (*line)[written++] = (char)c;
+        if (c == delimiter)
+            break;
+    }
+
+    (*line)[written] = '\0';
+    return (ssize_t)written;
+}
+
+ssize_t getline(char** line, size_t* capacity, FILE* stream)
+{
+    return getdelim(line, capacity, '\n', stream);
+}
+
+/* --- a pipe to a command -------------------------------------------------- */
+
+/* Which child belongs to which stream, so pclose can wait for the right one.
+ * A list rather than a field on FILE because FILE is shared with everything
+ * else and this concerns two functions. */
+#define MAX_PIPES 8
+static struct {
+    FILE* stream;
+    pid_t child;
+} s_pipes[MAX_PIPES];
+
+FILE* popen(const char* command, const char* mode)
+{
+    if (!command || !mode || (mode[0] != 'r' && mode[0] != 'w')) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    int slot = 0;
+    for (; slot < MAX_PIPES; ++slot) {
+        if (!s_pipes[slot].stream)
+            break;
+    }
+    if (slot == MAX_PIPES) {
+        errno = EMFILE;
+        return NULL;
+    }
+
+    int const reading = mode[0] == 'r';
+    int fds[2];
+    if (pipe(fds) < 0)
+        return NULL;
+
+    pid_t const child = fork();
+    if (child < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return NULL;
+    }
+
+    if (child == 0) {
+        /* The child talks down the end the parent is not holding. */
+        if (reading) {
+            close(fds[0]);
+            dup2(fds[1], STDOUT_FILENO);
+            close(fds[1]);
+        } else {
+            close(fds[1]);
+            dup2(fds[0], STDIN_FILENO);
+            close(fds[0]);
+        }
+        execl("/bin/sh", "sh", "-c", command, (char*)NULL);
+        _exit(127);
+    }
+
+    close(reading ? fds[1] : fds[0]);
+    FILE* const stream = fdopen(reading ? fds[0] : fds[1], reading ? "r" : "w");
+    if (!stream) {
+        close(reading ? fds[0] : fds[1]);
+        return NULL;
+    }
+
+    s_pipes[slot].stream = stream;
+    s_pipes[slot].child = child;
+    return stream;
+}
+
+int pclose(FILE* stream)
+{
+    int slot = 0;
+    for (; slot < MAX_PIPES; ++slot) {
+        if (s_pipes[slot].stream == stream)
+            break;
+    }
+    if (slot == MAX_PIPES) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    pid_t const child = s_pipes[slot].child;
+    s_pipes[slot].stream = NULL;
+    s_pipes[slot].child = 0;
+
+    fclose(stream);
+
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR)
+            return -1;
+    }
+    return status;
 }

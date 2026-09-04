@@ -52,6 +52,16 @@ static inline int ispunct(int c)
 {
     return isprint(c) && !isalnum(c) && c != ' ';
 }
+/* Whether the value fits in seven bits. Predates anyone caring about
+ * anything else and is still what a byte-at-a-time parser asks. */
+static inline int isascii(int c)
+{
+    return (unsigned)c < 128;
+}
+static inline int toascii(int c)
+{
+    return c & 0x7f;
+}
 static inline int tolower(int c)
 {
     return isupper(c) ? c + 32 : c;

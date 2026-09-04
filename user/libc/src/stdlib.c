@@ -18,9 +18,11 @@
 #include "internal.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define ALIGNMENT 16
@@ -491,16 +493,166 @@ char* getenv(const char* name)
     return 0;
 }
 
+/* --- the environment ------------------------------------------------------
+ *
+ * environ starts out pointing at the array the kernel built on the stack,
+ * which cannot be grown or freed. The first modification copies the whole
+ * thing to the heap -- strings included -- so that from then on every entry is
+ * ours and can be replaced or removed without wondering who owns what. One
+ * copy at the first setenv is a small price for not having to track it.
+ */
+
+static char** s_environment; /* our copy, once we have taken over */
+static size_t s_environment_count;
+static size_t s_environment_capacity;
+
+static int take_over_environment(void)
+{
+    if (s_environment)
+        return 0;
+
+    size_t count = 0;
+    if (environ) {
+        while (environ[count])
+            ++count;
+    }
+
+    size_t const capacity = count + 8;
+    char** const copy = calloc(capacity + 1, sizeof(char*));
+    if (!copy) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        copy[i] = strdup(environ[i]);
+        if (!copy[i]) {
+            for (size_t j = 0; j < i; ++j)
+                free(copy[j]);
+            free(copy);
+            errno = ENOMEM;
+            return -1;
+        }
+    }
+
+    s_environment = copy;
+    s_environment_count = count;
+    s_environment_capacity = capacity;
+    environ = copy;
+    return 0;
+}
+
+/* Finds "name=" and returns its index, or -1. */
+static long find_environment_entry(const char* name, size_t name_length)
+{
+    if (!environ)
+        return -1;
+    for (long i = 0; environ[i]; ++i) {
+        if (strncmp(environ[i], name, name_length) == 0 && environ[i][name_length] == '=')
+            return i;
+    }
+    return -1;
+}
+
 int setenv(const char* name, const char* value, int overwrite)
 {
-    /* environ points at the stack the kernel built, which cannot be grown in
-     * place. Rebuilding it needs an allocation and a copy; nothing here needs
-     * it yet, so it is honestly unimplemented rather than quietly wrong. */
-    (void)name;
-    (void)value;
-    (void)overwrite;
-    errno = ENOSYS;
-    return -1;
+    if (!name || !*name || strchr(name, '=') || !value) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (take_over_environment() < 0)
+        return -1;
+
+    size_t const name_length = strlen(name);
+    long const existing = find_environment_entry(name, name_length);
+    if (existing >= 0 && !overwrite)
+        return 0;
+
+    size_t const size = name_length + 1 + strlen(value) + 1;
+    char* const entry = malloc(size);
+    if (!entry) {
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(entry, name, name_length);
+    entry[name_length] = '=';
+    memcpy(entry + name_length + 1, value, strlen(value) + 1);
+
+    if (existing >= 0) {
+        free(s_environment[existing]);
+        s_environment[existing] = entry;
+        return 0;
+    }
+
+    if (s_environment_count + 1 >= s_environment_capacity) {
+        size_t const capacity = s_environment_capacity * 2;
+        char** const grown = realloc(s_environment, (capacity + 1) * sizeof(char*));
+        if (!grown) {
+            free(entry);
+            errno = ENOMEM;
+            return -1;
+        }
+        s_environment = grown;
+        s_environment_capacity = capacity;
+        environ = grown;
+    }
+
+    s_environment[s_environment_count++] = entry;
+    s_environment[s_environment_count] = NULL;
+    return 0;
+}
+
+int unsetenv(const char* name)
+{
+    if (!name || !*name || strchr(name, '=')) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (take_over_environment() < 0)
+        return -1;
+
+    size_t const name_length = strlen(name);
+    for (;;) {
+        long const existing = find_environment_entry(name, name_length);
+        if (existing < 0)
+            return 0;
+        free(s_environment[existing]);
+        /* Shift the tail down, terminator included. */
+        for (size_t i = (size_t)existing; i < s_environment_count; ++i)
+            s_environment[i] = s_environment[i + 1];
+        --s_environment_count;
+    }
+}
+
+int putenv(char* assignment)
+{
+    /*
+     * POSIX says the caller's string *becomes* the environment entry, so a
+     * later write through it is visible. This copies instead: with every entry
+     * owned here, replacing one is a free and an assignment rather than a
+     * question about who allocated what. Callers that rely on the aliasing are
+     * rare and are relying on a footgun.
+     */
+    if (!assignment) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    char* const equals = strchr(assignment, '=');
+    if (!equals) {
+        /* No '=' means remove it, which is a GNU extension everything uses. */
+        return unsetenv(assignment);
+    }
+
+    size_t const name_length = (size_t)(equals - assignment);
+    char* const name = strndup(assignment, name_length);
+    if (!name) {
+        errno = ENOMEM;
+        return -1;
+    }
+    int const result = setenv(name, equals + 1, 1);
+    free(name);
+    return result;
 }
 
 /* --- sorting and searching ----------------------------------------------- */
@@ -618,4 +770,103 @@ imaxdiv_t imaxdiv(intmax_t numerator, intmax_t denominator)
     result.quot = numerator / denominator;
     result.rem = numerator % denominator;
     return result;
+}
+
+/* --- division with both halves at once ----------------------------------- */
+
+div_t div(int numerator, int denominator)
+{
+    div_t result;
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+ldiv_t ldiv(long numerator, long denominator)
+{
+    ldiv_t result;
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+lldiv_t lldiv(long long numerator, long long denominator)
+{
+    lldiv_t result;
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+long long llabs(long long value)
+{
+    return value < 0 ? -value : value;
+}
+
+/* --- temporary files ------------------------------------------------------
+ *
+ * Both replace the six X's at the end of the template in place, and both keep
+ * trying until they find a name nothing else has. The counter is seeded from
+ * the pid so two processes racing do not walk the same sequence.
+ */
+
+static int fill_template(char* template_path, unsigned attempt)
+{
+    size_t const length = strlen(template_path);
+    if (length < 6 || strcmp(template_path + length - 6, "XXXXXX") != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    static const char ALPHABET[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    unsigned value = attempt * 2654435761u + (unsigned)getpid() * 40503u;
+    for (int i = 0; i < 6; ++i) {
+        template_path[length - 6 + i] = ALPHABET[value % (sizeof(ALPHABET) - 1)];
+        value /= (sizeof(ALPHABET) - 1);
+        value = value * 31 + 7;
+    }
+    return 0;
+}
+
+int mkstemp(char* template_path)
+{
+    if (!template_path) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (unsigned attempt = 0; attempt < 256; ++attempt) {
+        if (fill_template(template_path, attempt) < 0)
+            return -1;
+        /* O_EXCL is what makes this safe: the open both creates the file and
+         * proves nobody else got there first. */
+        int const fd = open(template_path, O_RDWR | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0)
+            return fd;
+        if (errno != EEXIST)
+            return -1;
+    }
+
+    errno = EEXIST;
+    return -1;
+}
+
+char* mkdtemp(char* template_path)
+{
+    if (!template_path) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    for (unsigned attempt = 0; attempt < 256; ++attempt) {
+        if (fill_template(template_path, attempt) < 0)
+            return NULL;
+        if (mkdir(template_path, 0700) == 0)
+            return template_path;
+        if (errno != EEXIST)
+            return NULL;
+    }
+
+    errno = EEXIST;
+    return NULL;
 }

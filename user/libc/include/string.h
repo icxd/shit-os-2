@@ -44,5 +44,6 @@ char* stpcpy(char* destination, const char* source);
 char* stpncpy(char* destination, const char* source, size_t count);
 void* mempcpy(void* destination, const void* source, size_t count);
 char* strchrnul(const char* text, int c);
+char* strndup(const char* text, size_t limit);
 
 #endif /* _STRING_H */

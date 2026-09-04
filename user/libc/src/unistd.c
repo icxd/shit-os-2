@@ -483,7 +483,14 @@ long sysconf(int name)
     case _SC_PAGESIZE: return 4096;
     case _SC_CLK_TCK: return 250; /* the PIT runs at 250 Hz */
     case _SC_NPROCESSORS_ONLN: return 1;
-    case _SC_ARG_MAX: return 4096; /* MAX_ARGUMENT_BYTES */
+    case _SC_ARG_MAX: return 32 * 1024; /* MAX_ARGUMENT_BYTES in kernel/sched/process.h */
+    case _SC_LOGIN_NAME_MAX: return 32;
+    case _SC_HOST_NAME_MAX: return 64;
+    case _SC_TTY_NAME_MAX: return 32;
+    case _SC_CHILD_MAX: return 64;
+    case _SC_NGROUPS_MAX: return 1;
+    case _SC_LINE_MAX: return 4096;
+    case _SC_SYMLOOP_MAX: return 8;
     default: errno = EINVAL; return -1;
     }
 }

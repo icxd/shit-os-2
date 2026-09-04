@@ -343,3 +343,17 @@ char* strchrnul(const char* text, int c)
      * than NULL, so the caller can use the result without a branch. */
     return (char*)text;
 }
+
+char* strndup(const char* text, size_t limit)
+{
+    size_t length = 0;
+    while (length < limit && text[length])
+        ++length;
+
+    char* const copy = malloc(length + 1);
+    if (!copy)
+        return 0;
+    memcpy(copy, text, length);
+    copy[length] = '\0';
+    return copy;
+}

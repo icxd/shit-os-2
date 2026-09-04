@@ -128,6 +128,11 @@ public:
     bool is_directory() const { return m_type == InodeType::Directory; }
     u64 inode_number() const { return m_inode_number; }
     u32 mode() const { return m_mode; }
+    void set_mode(u32 mode)
+    {
+        m_mode = mode & 07777;
+        touch();
+    }
     virtual u64 size() const { return m_size; }
 
     FileSystem* filesystem() const { return m_filesystem; }

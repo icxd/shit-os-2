@@ -38,6 +38,26 @@ DIR* opendir(const char* path)
     return directory;
 }
 
+DIR* fdopendir(int fd)
+{
+    if (fd < 0) {
+        errno = EBADF;
+        return 0;
+    }
+
+    DIR* directory = malloc(sizeof(DIR));
+    if (!directory) {
+        errno = ENOMEM;
+        return 0;
+    }
+
+    /* The descriptor is ours now; closedir is what closes it. */
+    directory->fd = fd;
+    directory->available = 0;
+    directory->position = 0;
+    return directory;
+}
+
 struct dirent* readdir(DIR* directory)
 {
     if (!directory)

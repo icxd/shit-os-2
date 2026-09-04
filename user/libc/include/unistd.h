@@ -76,6 +76,13 @@ long sysconf(int name);
 #define _SC_CLK_TCK 2
 #define _SC_NPROCESSORS_ONLN 84
 #define _SC_ARG_MAX 0
+#define _SC_LOGIN_NAME_MAX 71
+#define _SC_HOST_NAME_MAX 180
+#define _SC_TTY_NAME_MAX 72
+#define _SC_CHILD_MAX 1
+#define _SC_NGROUPS_MAX 3
+#define _SC_LINE_MAX 43
+#define _SC_SYMLOOP_MAX 173
 
 /* There is no permission model yet, so access() answers "does it exist and is
  * it the right kind of thing", which is what every caller here wants. */
@@ -84,6 +91,42 @@ long sysconf(int name);
 #define W_OK 2
 #define R_OK 4
 int access(const char* path, int mode);
+int faccessat(int directory, const char* path, int mode, int flags);
+
+int ftruncate(int fd, off_t length);
+int truncate(const char* path, off_t length);
+
+int chown(const char* path, uid_t owner, gid_t group);
+int fchown(int fd, uid_t owner, gid_t group);
+int lchown(const char* path, uid_t owner, gid_t group);
+int fchownat(int directory, const char* path, uid_t owner, gid_t group, int flags);
+
+/*
+ * Hard links and symbolic links do not exist -- no filesystem here records
+ * more than one name per inode -- so these report ENOSYS rather than a
+ * plausible failure a caller might retry past.
+ */
+int link(const char* from, const char* to);
+int linkat(int from_directory, const char* from, int to_directory, const char* to, int flags);
+int symlink(const char* target, const char* path);
+int symlinkat(const char* target, int directory, const char* path);
+ssize_t readlinkat(int directory, const char* path, char* buffer, size_t capacity);
+ssize_t readlink(const char* path, char* buffer, size_t capacity);
+int unlinkat(int directory, const char* path, int flags);
+
+int chroot(const char* path);
+void sync(void);
+
+char* ttyname(int fd);
+char* getlogin(void);
+int gethostname(char* buffer, size_t capacity);
+int sethostname(const char* name, size_t length);
+
+/* The variadic exec spellings. The list is terminated by a null pointer; the
+ * `e` forms take an environment after it, and the `p` forms search PATH. */
+int execl(const char* path, const char* argument, ...);
+int execlp(const char* file, const char* argument, ...);
+int execle(const char* path, const char* argument, ...);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
 

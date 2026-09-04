@@ -72,6 +72,22 @@ the top bit set.
 | 40 | `poll` | `(struct pollfd*, nfds_t, int timeout_ms)` | `POLLIN`/`POLLOUT`/`POLLHUP`/`POLLNVAL`. `select` is a libc translation onto it. |
 | 41 | `sigprocmask` | `(int how, const sigset_t*, sigset_t*)` | `SIGKILL` and `SIGSTOP` cannot be blocked. Inherited across fork and exec. |
 | 42 | `umask` | `(mode_t mask)` | Returns the previous mask. |
+| 43 | `ftruncate` | `(int fd, off_t length)` | Grows with zeroes, shrinks by discarding. `EBADF` if the description is not writable. |
+| 44 | `chmod` | `(const char* path, mode_t mode)` | Records the bits; nothing checks them yet. Recording the wrong thing now means the whole tree is wrong when something finally does. |
+| 45 | `openat` | `(int dirfd, const char* path, int flags, mode_t mode)` | |
+| 46 | `fstatat` | `(int dirfd, const char* path, struct stat*, int flags)` | No symlinks exist, so `AT_SYMLINK_NOFOLLOW` is accepted and means nothing. |
+| 47 | `unlinkat` | `(int dirfd, const char* path, int flags)` | `AT_REMOVEDIR` selects `rmdir` semantics; without it a directory is `EISDIR`. |
+| 48 | `mkdirat` | `(int dirfd, const char* path, mode_t mode)` | |
+| 49 | `fchmodat` | `(int dirfd, const char* path, mode_t mode, int flags)` | |
+
+The `at` family resolves against the descriptor's inode rather than against a
+rebuilt path, which is the entire point of it: `du`, `rm -r` and `cp -r`
+descend by opening each directory and walking from there, so they never build
+a path that a concurrent rename could invalidate. `AT_FDCWD` means the working
+directory. `chmod`, `mkdir`, `open`, `stat` and `unlink` keep their own numbers
+rather than becoming libc wrappers over these, because they are the calls
+almost everything makes and an extra argument on every one of them buys
+nothing.
 
 ## Extensions
 
@@ -100,7 +116,14 @@ rather than by getting a plausible wrong answer:
 - `sigpending`, and `sigsuspend` as a syscall. The libc has a sigsuspend that
   polls; see the comment on it for why that is race-free and a real one would
   be better.
-- `readlink`, `symlink`, `link`, `chmod`, `chown`.
+- `link` and `symlink`. No filesystem here records more than one name per
+  inode, so both fail with `ENOSYS` rather than pretending; `readlink` reports
+  `EINVAL`, which is what it says about an ordinary file, after checking the
+  file exists.
+- Ownership. `chown`, `lchown` and `fchown` live in the libc, check the file
+  exists and then succeed without a syscall, because everything already runs as
+  the only uid there is. `chmod` is different and is a real call: mode bits are
+  recorded even though nothing checks them.
 - `settimeofday` and `clock_settime`. The clock is read once at boot from
   whatever driver offers one and never written.
 - Threads. One thread per process today, though the Thread/Process split is
