@@ -11,6 +11,8 @@
 #include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
 
+#include <shitos/abi/wait.h>
+
 namespace kernel {
 
 namespace {
@@ -81,6 +83,12 @@ ErrorOr<Process*> Process::create(char const* name, Process* parent)
     }
     process->m_parent_pid = parent != nullptr ? parent->m_pid : 0;
     strncpy(process->m_name, name, PROCESS_NAME_MAX - 1);
+
+    // A child starts in its parent's job and its parent's session. The first
+    // process has neither to inherit, so it leads both -- which makes init a
+    // session leader without any special case for it elsewhere.
+    process->m_pgid = parent != nullptr ? parent->m_pgid : process->m_pid;
+    process->m_sid = parent != nullptr ? parent->m_sid : process->m_pid;
 
     // Inherit the parent's working directory, or start at the root. Holding
     // a pointer to it means holding a reference: a directory can be removed
@@ -298,25 +306,52 @@ void Process::mark_exited(int status)
     }
 }
 
-ErrorOr<pid_t> Process::reap_child(pid_t wanted, int& status_out, bool blocking)
+ErrorOr<pid_t> Process::reap_child(pid_t wanted, int& status_out, bool blocking, int options)
 {
     for (;;) {
         bool any_children = false;
         Process* finished = nullptr;
+        Process* changed = nullptr;
 
         {
             InterruptLockGuard guard(s_process_lock);
             for (Process* child : s_processes) {
                 if (child->m_parent_pid != m_pid || child == this)
                     continue;
+                // wanted < -1 waits on a process group, -1 on any child, 0 on
+                // the caller's own group: what a shell needs to wait for a job
+                // rather than a process.
                 if (wanted > 0 && child->m_pid != wanted)
+                    continue;
+                if (wanted == 0 && child->m_pgid != m_pgid)
+                    continue;
+                if (wanted < -1 && child->m_pgid != -wanted)
                     continue;
                 any_children = true;
                 if (child->m_has_exited) {
                     finished = child;
                     break;
                 }
+                // A stop or a continue is reported without reaping: the child
+                // is still alive and will be waited for again.
+                if (changed == nullptr) {
+                    if ((options & WUNTRACED) != 0 && child->m_stop_pending)
+                        changed = child;
+                    else if ((options & WCONTINUED) != 0 && child->m_continue_pending)
+                        changed = child;
+                }
             }
+        }
+
+        if (changed != nullptr) {
+            if (changed->m_stop_pending) {
+                changed->m_stop_pending = false;
+                status_out = W_STOPPED(changed->m_stop_signal);
+            } else {
+                changed->m_continue_pending = false;
+                status_out = W_CONTINUED;
+            }
+            return changed->m_pid;
         }
 
         if (finished != nullptr) {
@@ -341,13 +376,171 @@ ErrorOr<pid_t> Process::reap_child(pid_t wanted, int& status_out, bool blocking)
     }
 }
 
+// --- process groups and sessions ----------------------------------------
+
+ErrorOr<void> Process::set_process_group(pid_t pid, pid_t pgid)
+{
+    auto* caller = Process::current();
+    if (caller == nullptr)
+        return Error::from_errno(ESRCH);
+
+    if (pid < 0 || pgid < 0)
+        return Error::from_errno(EINVAL);
+
+    Process* target = pid == 0 ? caller : Process::by_pid(pid);
+    if (target == nullptr)
+        return Error::from_errno(ESRCH);
+
+    // Only self or a child, and only within the caller's own session. Without
+    // that a process could move an unrelated job into its own group and steal
+    // the terminal from it.
+    if (target != caller && target->m_parent_pid != caller->m_pid)
+        return Error::from_errno(ESRCH);
+    if (target->m_sid != caller->m_sid)
+        return Error::from_errno(EPERM);
+
+    // A session leader has no group to move to: its group is the session.
+    if (target->m_pid == target->m_sid)
+        return Error::from_errno(EPERM);
+
+    pid_t const wanted = pgid == 0 ? target->m_pid : pgid;
+
+    // The group must already exist in this session, or be created by the
+    // process that will lead it. Anything else would put a process in a group
+    // that nothing can name.
+    if (wanted != target->m_pid) {
+        InterruptLockGuard guard(s_process_lock);
+        bool found = false;
+        for (Process* process : s_processes) {
+            if (process->m_pgid == wanted && process->m_sid == caller->m_sid) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return Error::from_errno(EPERM);
+    }
+
+    target->m_pgid = wanted;
+    return {};
+}
+
+ErrorOr<pid_t> Process::start_session()
+{
+    // A group leader cannot start a session: its group would end up split
+    // across two sessions, which is the one thing the hierarchy forbids.
+    if (m_pid == m_pgid)
+        return Error::from_errno(EPERM);
+
+    m_sid = m_pid;
+    m_pgid = m_pid;
+    // A new session has no controlling terminal. Nothing tracks one per
+    // session yet, so this is where that would be dropped.
+    return m_sid;
+}
+
+usize Process::for_each_in_group(pid_t pgid, void (*callback)(Process&, void*), void* context)
+{
+    // Collect first, then call: the callback may signal a process, and
+    // signalling can stop or wake one, which must not happen under the lock.
+    static constexpr usize MAX_GROUP = 64;
+    Process* members[MAX_GROUP];
+    usize count = 0;
+
+    {
+        InterruptLockGuard guard(s_process_lock);
+        for (Process* process : s_processes) {
+            if (process->m_pgid != pgid || process->m_has_exited)
+                continue;
+            if (count < MAX_GROUP)
+                members[count++] = process;
+        }
+    }
+
+    for (usize i = 0; i < count; ++i)
+        callback(*members[i], context);
+    return count;
+}
+
+bool Process::group_exists(pid_t pgid)
+{
+    InterruptLockGuard guard(s_process_lock);
+    for (Process* process : s_processes) {
+        if (process->m_pgid == pgid && !process->m_has_exited)
+            return true;
+    }
+    return false;
+}
+
+void Process::stop(int signal)
+{
+    m_is_stopped = true;
+    m_stop_signal = signal;
+    m_stop_pending = true;
+    m_continue_pending = false;
+
+    // The parent hears about it the same way it hears about an exit, so a
+    // shell blocked in waitpid wakes up rather than hanging until the job is
+    // continued by something else.
+    if (auto* parent = Process::by_pid(m_parent_pid); parent != nullptr) {
+        parent->raise_signal(SIGCHLD);
+        parent->m_child_exit_queue.wake_all();
+    }
+
+    // Does not return until resume() puts the thread back on the run queue.
+    if (m_main_thread != nullptr && m_main_thread == Scheduler::current())
+        Scheduler::block_current(ThreadState::Stopped);
+}
+
+void Process::resume()
+{
+    if (!m_is_stopped)
+        return;
+
+    m_is_stopped = false;
+    m_stop_signal = 0;
+    m_stop_pending = false;
+    m_continue_pending = true;
+
+    if (auto* parent = Process::by_pid(m_parent_pid); parent != nullptr) {
+        parent->raise_signal(SIGCHLD);
+        parent->m_child_exit_queue.wake_all();
+    }
+
+    if (m_main_thread != nullptr)
+        Scheduler::unblock(m_main_thread);
+}
+
 // --- signals ------------------------------------------------------------
+
+// The four signals whose default action is to suspend.
+static constexpr u64 STOP_SIGNAL_MASK
+    = (1ULL << SIGSTOP) | (1ULL << SIGTSTP) | (1ULL << SIGTTIN) | (1ULL << SIGTTOU);
 
 void Process::raise_signal(int signal)
 {
     if (signal <= 0 || signal >= NSIG)
         return;
+
+    // Stopping and continuing cancel each other. A process that was sent
+    // SIGTSTP and then SIGCONT before either was delivered must end up
+    // running, not stopped and then confused about why.
+    if (signal == SIGCONT)
+        __atomic_and_fetch(&m_pending_signals, ~STOP_SIGNAL_MASK, __ATOMIC_RELEASE);
+    else if ((STOP_SIGNAL_MASK & (1ULL << signal)) != 0)
+        __atomic_and_fetch(&m_pending_signals, ~(1ULL << SIGCONT), __ATOMIC_RELEASE);
+
     __atomic_or_fetch(&m_pending_signals, 1ULL << signal, __ATOMIC_RELEASE);
+
+    // Two signals cannot wait to be delivered, because a stopped process is
+    // not running to deliver anything. Continuing has to happen here, and so
+    // does the one signal that must reach a process no matter what state it
+    // is in.
+    //
+    // Delivery still happens afterwards for SIGCONT: the bit stays set so a
+    // caught handler runs once the process is going again.
+    if (m_is_stopped && (signal == SIGCONT || signal == SIGKILL))
+        resume();
 }
 
 int Process::take_pending_signal()
@@ -363,7 +556,7 @@ int Process::take_pending_signal()
     return signal;
 }
 
-void Process::set_signal_action(int signal, void* handler, void* restorer)
+void Process::set_signal_action(int signal, void* handler, void* restorer, int flags)
 {
     if (signal <= 0 || signal >= NSIG)
         return;
@@ -373,6 +566,14 @@ void Process::set_signal_action(int signal, void* handler, void* restorer)
         return;
     m_signal_handlers[signal] = handler;
     m_signal_restorers[signal] = restorer;
+    m_signal_flags[signal] = flags;
+}
+
+int Process::signal_flags(int signal) const
+{
+    if (signal <= 0 || signal >= NSIG)
+        return 0;
+    return m_signal_flags[signal];
 }
 
 void* Process::signal_disposition(int signal) const

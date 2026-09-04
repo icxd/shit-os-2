@@ -67,6 +67,7 @@ ErrorOr<void> Tty::initialize()
     tty.m_termios.c_cc[VERASE] = 8; // backspace
     tty.m_termios.c_cc[VKILL] = 21; // ^U
     tty.m_termios.c_cc[VEOF] = 4; // ^D
+    tty.m_termios.c_cc[VSUSP] = 26; // ^Z
 
     // The keyboard is whatever registered /dev/kbd0. If no keyboard module
     // loaded, the terminal is output-only rather than broken.
@@ -89,6 +90,16 @@ ErrorOr<void> Tty::initialize()
 
     klog(LOG_INFO, "tty", "/dev/tty0 ready (canonical mode, echo on)");
     return {};
+}
+
+void Tty::signal_foreground_group(int signal)
+{
+    if (m_foreground_group == 0)
+        return;
+    Process::for_each_in_group(
+        m_foreground_group,
+        [](Process& process, void* context) { process.raise_signal(*static_cast<int*>(context)); },
+        &signal);
 }
 
 void Tty::echo(char c)
@@ -118,21 +129,21 @@ void Tty::process_input_character(char c)
         c = '\n';
 
     if ((m_termios.c_lflag & ISIG) != 0) {
-        if (c == static_cast<char>(m_termios.c_cc[VINTR])) {
+        int generated = 0;
+        if (c == static_cast<char>(m_termios.c_cc[VINTR]))
+            generated = SIGINT;
+        else if (c == static_cast<char>(m_termios.c_cc[VQUIT]))
+            generated = SIGQUIT;
+        else if (c == static_cast<char>(m_termios.c_cc[VSUSP]))
+            generated = SIGTSTP;
+
+        if (generated != 0) {
             echo(c);
             kputchar('\n');
+            // Whatever was half typed is discarded: the line the user was
+            // building is not what they meant to send any more.
             m_line_length = 0;
-            if (auto* process = Process::by_pid(m_foreground_pid); process != nullptr)
-                process->raise_signal(SIGINT);
-            m_readers.wake_all();
-            return;
-        }
-        if (c == static_cast<char>(m_termios.c_cc[VQUIT])) {
-            echo(c);
-            kputchar('\n');
-            m_line_length = 0;
-            if (auto* process = Process::by_pid(m_foreground_pid); process != nullptr)
-                process->raise_signal(SIGQUIT);
+            signal_foreground_group(generated);
             m_readers.wake_all();
             return;
         }
@@ -215,10 +226,27 @@ isize Tty::read(void* buffer, usize length)
     if (length == 0)
         return 0;
 
-    // Whoever reads the terminal becomes the target for ^C. A real job control
-    // implementation would use process groups; this is the useful 90%.
-    if (auto* process = Process::current(); process != nullptr)
-        m_foreground_pid = process->pid();
+    auto* reader = Process::current();
+
+    // A terminal whose owning group has gone belongs to nobody, and leaving it
+    // that way would stop every later reader with SIGTTIN -- a wedged console
+    // with no way back. The next reader takes it instead.
+    if (m_foreground_group != 0 && !Process::group_exists(m_foreground_group))
+        m_foreground_group = 0;
+
+    // Same rule before anyone has claimed it with TIOCSPGRP. Without it, the
+    // shell init spawns would be in the background of a terminal nobody owns
+    // and could never read at all.
+    if (m_foreground_group == 0 && reader != nullptr)
+        m_foreground_group = reader->pgid();
+
+    // A background job reading the terminal is stopped rather than allowed to
+    // steal input the foreground job is waiting for. SIGTTIN is the mechanism
+    // and `fg` is the cure.
+    if (reader != nullptr && m_foreground_group != 0 && reader->pgid() != m_foreground_group) {
+        reader->raise_signal(SIGTTIN);
+        return -EINTR;
+    }
 
     while (m_ready_head == m_ready_tail) {
         if (m_saw_eof) {
@@ -269,6 +297,25 @@ int Tty::ioctl(u32 request, void* argument)
         if (argument == nullptr)
             return -EINVAL;
         memcpy(&m_termios, argument, sizeof(m_termios));
+        return 0;
+    }
+    case TIOCGPGRP: {
+        if (argument == nullptr)
+            return -EINVAL;
+        *static_cast<i32*>(argument) = m_foreground_group;
+        return 0;
+    }
+    case TIOCSPGRP: {
+        if (argument == nullptr)
+            return -EINVAL;
+        i32 const wanted = *static_cast<i32 const*>(argument);
+        if (wanted <= 0)
+            return -EINVAL;
+        // A group that does not exist would leave the terminal owned by
+        // nothing, and every subsequent read would stop its caller.
+        if (!Process::group_exists(wanted))
+            return -EPERM;
+        m_foreground_group = wanted;
         return 0;
     }
     case TIOCGWINSZ: {

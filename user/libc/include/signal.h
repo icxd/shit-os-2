@@ -13,6 +13,10 @@ typedef void (*sighandler_t)(int);
 typedef volatile int sig_atomic_t;
 
 int kill(pid_t pid, int signal);
+
+/* kill(-pgid), spelled the way a shell means it. A pgid of 0 is the caller's
+ * own group. */
+int killpg(pid_t pgid, int signal);
 int raise(int signal);
 sighandler_t signal(int number, sighandler_t handler);
 int sigaction(int number, const struct sigaction* action, struct sigaction* old);

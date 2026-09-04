@@ -30,6 +30,7 @@ char const* to_string(ThreadState state)
     case ThreadState::Running: return "running";
     case ThreadState::Blocked: return "blocked";
     case ThreadState::Sleeping: return "sleeping";
+    case ThreadState::Stopped: return "stopped";
     case ThreadState::Zombie: return "zombie";
     }
     return "?";

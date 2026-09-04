@@ -31,6 +31,22 @@ int dup2(int fd, int to);
 int pipe(int fds[2]);
 
 int chdir(const char* path);
+
+/*
+ * Job control. A session is a login, a process group is a job within it, and
+ * both are named by the pid of whichever process started them -- so there is
+ * no allocator, just setsid() and setpgid(0, 0).
+ */
+int setpgid(pid_t pid, pid_t pgid);
+pid_t getpgid(pid_t pid);
+pid_t getpgrp(void);
+pid_t setsid(void);
+pid_t getsid(pid_t pid);
+
+/* Which process group owns the terminal on `fd`. The shell moves it as jobs
+ * come to the foreground; a background group that reads gets SIGTTIN. */
+pid_t tcgetpgrp(int fd);
+int tcsetpgrp(int fd, pid_t pgid);
 char* getcwd(char* buffer, size_t size);
 int rmdir(const char* path);
 int unlink(const char* path);

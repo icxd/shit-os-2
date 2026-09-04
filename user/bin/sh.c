@@ -35,6 +35,138 @@ struct Command {
 
 static int s_last_status;
 
+/* --- jobs ----------------------------------------------------------------
+ *
+ * A job is a pipeline, and every process in it shares one process group. That
+ * group is the unit everything else works on: the terminal hands it to
+ * exactly one group at a time, ^C and ^Z reach the whole of it, and waiting
+ * for a job means waiting for the group rather than for each pid in turn.
+ *
+ * The shell puts itself in its own group and session at startup so that it is
+ * never in the same group as a job it started -- otherwise ^C aimed at the
+ * foreground job would kill the shell too.
+ */
+
+#define MAX_JOBS 32
+
+struct Job {
+    pid_t pgid;
+    int used;
+    int stopped;
+    char command[LINE_MAX];
+};
+
+static struct Job s_jobs[MAX_JOBS];
+static int s_job_control; /* off when the shell is not on a terminal */
+static pid_t s_shell_pgid;
+
+static struct Job* find_job(pid_t pgid)
+{
+    for (int i = 0; i < MAX_JOBS; ++i) {
+        if (s_jobs[i].used && s_jobs[i].pgid == pgid)
+            return &s_jobs[i];
+    }
+    return NULL;
+}
+
+static struct Job* add_job(pid_t pgid, const char* command, int stopped)
+{
+    struct Job* job = find_job(pgid);
+    if (!job) {
+        for (int i = 0; i < MAX_JOBS; ++i) {
+            if (!s_jobs[i].used) {
+                job = &s_jobs[i];
+                break;
+            }
+        }
+    }
+    if (!job)
+        return NULL;
+
+    job->used = 1;
+    job->pgid = pgid;
+    job->stopped = stopped;
+    strncpy(job->command, command ? command : "", sizeof(job->command) - 1);
+    job->command[sizeof(job->command) - 1] = '\0';
+    return job;
+}
+
+static void remove_job(pid_t pgid)
+{
+    struct Job* job = find_job(pgid);
+    if (job)
+        job->used = 0;
+}
+
+static int job_number(const struct Job* job)
+{
+    return (int)(job - s_jobs) + 1;
+}
+
+static struct Job* job_by_number(int number)
+{
+    if (number < 1 || number > MAX_JOBS)
+        return NULL;
+    struct Job* job = &s_jobs[number - 1];
+    return job->used ? job : NULL;
+}
+
+/* The most recently stopped or backgrounded job: what bare `fg` and `bg`
+ * mean. */
+static struct Job* current_job(void)
+{
+    for (int i = MAX_JOBS - 1; i >= 0; --i) {
+        if (s_jobs[i].used)
+            return &s_jobs[i];
+    }
+    return NULL;
+}
+
+/* Takes the terminal back after a job stops or finishes. Doing this before
+ * printing the prompt is what stops the shell being read-blocked in the
+ * background of its own terminal. */
+static void reclaim_terminal(void)
+{
+    if (s_job_control)
+        tcsetpgrp(STDIN_FILENO, s_shell_pgid);
+}
+
+/* Waits for a whole job. Returns the last process's status, and records the
+ * job as stopped rather than reaping it if ^Z arrived. */
+static int wait_for_job(pid_t pgid, const char* description, int foreground)
+{
+    int status = 0;
+    int live = 0;
+
+    for (;;) {
+        int child_status = 0;
+        pid_t const finished = waitpid(-pgid, &child_status, WUNTRACED);
+        if (finished < 0)
+            break;
+
+        if (WIFSTOPPED(child_status)) {
+            struct Job* const job = add_job(pgid, description, 1);
+            if (foreground) {
+                reclaim_terminal();
+                printf("\n[%d]+  %-8s  %s\n", job ? job_number(job) : 0, "Stopped",
+                    description ? description : "");
+            }
+            return 128 + WSTOPSIG(child_status);
+        }
+
+        status = child_status;
+        ++live;
+        /* waitpid(-pgid) returns ECHILD once the group is empty, which is how
+         * this loop ends. */
+    }
+
+    (void)live;
+    remove_job(pgid);
+    if (foreground)
+        reclaim_terminal();
+    return status;
+}
+
 /* --- parsing ------------------------------------------------------------ */
 
 /* Splits on whitespace, honouring single and double quotes so that
@@ -116,6 +248,9 @@ static void print_help(void)
 {
     printf("shit os 2 shell. builtins:\n");
     printf("  cd [dir]        change directory (no argument means /)\n");
+    printf("  jobs            list stopped and background jobs\n");
+    printf("  fg [%%n]         bring a job to the foreground\n");
+    printf("  bg [%%n]         continue a stopped job in the background\n");
     printf("  pwd             print the working directory\n");
     printf("  exit [status]   leave the shell (init will start another)\n");
     printf("  help            this\n");
@@ -124,6 +259,8 @@ static void print_help(void)
     printf("\n");
     printf("everything else is looked up on PATH. pipelines with | and\n");
     printf("redirection with < > >> work; quoting works; globbing does not.\n");
+    printf("a trailing & backgrounds a job. ^C interrupts the foreground job,\n");
+    printf("^Z stops it.\n");
 }
 
 /* Returns 1 if the command was a builtin and has been handled. */
@@ -155,6 +292,54 @@ static int run_builtin(struct Command* command, int* should_exit)
         else
             perror("pwd");
         s_last_status = 0;
+        return 1;
+    }
+
+    if (strcmp(name, "jobs") == 0) {
+        for (int i = 0; i < MAX_JOBS; ++i) {
+            if (!s_jobs[i].used)
+                continue;
+            printf("[%d]+  %-8s  %s\n", i + 1, s_jobs[i].stopped ? "Stopped" : "Running",
+                s_jobs[i].command);
+        }
+        s_last_status = 0;
+        return 1;
+    }
+
+    if (strcmp(name, "fg") == 0 || strcmp(name, "bg") == 0) {
+        int const to_foreground = strcmp(name, "fg") == 0;
+        struct Job* job = command->argc > 1
+            ? job_by_number(atoi(command->argv[1] + (command->argv[1][0] == '%' ? 1 : 0)))
+            : current_job();
+        if (!job) {
+            fprintf(stderr, "sh: %s: no such job\n", name);
+            s_last_status = 1;
+            return 1;
+        }
+        if (!s_job_control) {
+            fprintf(stderr, "sh: %s: no job control on this terminal\n", name);
+            s_last_status = 1;
+            return 1;
+        }
+
+        printf("%s\n", job->command);
+        job->stopped = 0;
+
+        /* SIGCONT before the terminal handover: a job that is still stopped
+         * cannot react to owning it. */
+        if (to_foreground) {
+            pid_t const pgid = job->pgid;
+            tcsetpgrp(STDIN_FILENO, pgid);
+            killpg(pgid, SIGCONT);
+            char text[LINE_MAX];
+            strncpy(text, job->command, sizeof(text) - 1);
+            text[sizeof(text) - 1] = '\0';
+            int const status = wait_for_job(pgid, text, 1);
+            s_last_status = status >= 128 ? status : WEXITSTATUS(status);
+        } else {
+            killpg(job->pgid, SIGCONT);
+            s_last_status = 0;
+        }
         return 1;
     }
 
@@ -203,11 +388,12 @@ static void apply_redirections(struct Command* command)
     }
 }
 
-static int run_pipeline(struct Command* commands, int count)
+static int run_pipeline(struct Command* commands, int count, int background, const char* text)
 {
     pid_t children[MAX_PIPELINE];
     int child_count = 0;
     int input_fd = -1;
+    pid_t pgid = 0;
 
     for (int i = 0; i < count; ++i) {
         int pipe_fds[2] = { -1, -1 };
@@ -230,9 +416,25 @@ static int run_pipeline(struct Command* commands, int count)
 
         if (child == 0) {
             /* A child of the shell is in the foreground, so it gets the
-             * default reaction to ^C rather than the shell's. */
+             * default reaction to ^C rather than the shell's -- and to ^Z,
+             * which the shell also ignores. */
             signal(SIGINT, SIG_DFL);
             signal(SIGQUIT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
+            signal(SIGTTIN, SIG_DFL);
+            signal(SIGTTOU, SIG_DFL);
+
+            /* Join the job's group -- the first child creates it. Both the
+             * parent and the child do this, because whichever runs first must
+             * find the group already in place: the parent needs it to hand
+             * over the terminal, the child needs it before it can be signalled
+             * as part of the job. Doing it twice is harmless. */
+            if (s_job_control) {
+                pid_t const group = pgid != 0 ? pgid : getpid();
+                setpgid(0, group);
+                if (!background)
+                    tcsetpgrp(STDIN_FILENO, group);
+            }
 
             if (input_fd >= 0) {
                 dup2(input_fd, STDIN_FILENO);
@@ -253,6 +455,12 @@ static int run_pipeline(struct Command* commands, int count)
 
         children[child_count++] = child;
 
+        if (s_job_control) {
+            if (pgid == 0)
+                pgid = child;
+            setpgid(child, pgid);
+        }
+
         /* The shell must close its copies, or the reader at the far end of
          * the pipe never sees end of file. */
         if (input_fd >= 0)
@@ -263,25 +471,66 @@ static int run_pipeline(struct Command* commands, int count)
         }
     }
 
-    int status = 0;
-    for (int i = 0; i < child_count; ++i) {
-        int child_status = 0;
-        waitpid(children[i], &child_status, 0);
-        /* The pipeline's status is the last command's, as POSIX specifies. */
-        if (i == child_count - 1)
-            status = child_status;
+    if (!s_job_control) {
+        /* No terminal to hand around, so wait for each child by pid. */
+        int status = 0;
+        for (int i = 0; i < child_count; ++i) {
+            int child_status = 0;
+            waitpid(children[i], &child_status, 0);
+            if (i == child_count - 1)
+                status = child_status;
+        }
+        if (WIFSIGNALED(status))
+            return 128 + WTERMSIG(status);
+        return WEXITSTATUS(status);
     }
 
-    if (WIFSIGNALED(status)) {
-        if (WTERMSIG(status) == SIGINT)
-            printf("\n");
-        return 128 + WTERMSIG(status);
+    if (!background) {
+        tcsetpgrp(STDIN_FILENO, pgid);
+        int const status = wait_for_job(pgid, text, 1);
+        if (WIFSIGNALED(status)) {
+            if (WTERMSIG(status) == SIGINT)
+                printf("\n");
+            return 128 + WTERMSIG(status);
+        }
+        /* wait_for_job hands back 128+signal directly when the job stopped. */
+        if (status >= 128)
+            return status;
+        return WEXITSTATUS(status);
     }
-    return WEXITSTATUS(status);
+
+    struct Job* const job = add_job(pgid, text, 0);
+    printf("[%d] %d\n", job ? job_number(job) : 0, (int)pgid);
+    return 0;
 }
 
 static void run_line(char* line, int* should_exit)
 {
+    /* Keep the text as typed: the job table shows it, and splitting the line
+     * below writes NULs into it. */
+    char original[LINE_MAX];
+    strncpy(original, line, sizeof(original) - 1);
+    original[sizeof(original) - 1] = '\0';
+
+    /* A trailing & runs the pipeline in the background. Stripped before
+     * anything else looks at the line, because it is not an argument. */
+    int background = 0;
+    {
+        size_t end = strlen(line);
+        while (end > 0 && (line[end - 1] == ' ' || line[end - 1] == '\t'))
+            --end;
+        if (end > 0 && line[end - 1] == '&') {
+            background = 1;
+            line[end - 1] = '\0';
+            /* And out of the remembered text too. */
+            size_t shown = strlen(original);
+            while (shown > 0 && (original[shown - 1] == ' ' || original[shown - 1] == '\t'))
+                --shown;
+            if (shown > 0 && original[shown - 1] == '&')
+                original[shown - 1] = '\0';
+        }
+    }
+
     /* Split on | first, then tokenize each stage. */
     char* stages[MAX_PIPELINE];
     int stage_count = 0;
@@ -317,7 +566,33 @@ static void run_line(char* line, int* should_exit)
     if (command_count == 1 && run_builtin(&commands[0], should_exit))
         return;
 
-    s_last_status = run_pipeline(commands, command_count);
+    s_last_status = run_pipeline(commands, command_count, background, original);
+}
+
+/* Notices background jobs that finished or stopped while we were not looking.
+ * Called before each prompt, which is where a shell is allowed to be chatty
+ * about it. */
+static void reap_background_jobs(void)
+{
+    for (;;) {
+        int status = 0;
+        pid_t const finished = waitpid(-1, &status, WNOHANG | WUNTRACED);
+        if (finished <= 0)
+            return;
+
+        pid_t const group = getpgid(finished);
+        struct Job* const job = find_job(group > 0 ? group : finished);
+        if (!job)
+            continue;
+
+        if (WIFSTOPPED(status)) {
+            job->stopped = 1;
+            printf("[%d]+  %-8s  %s\n", job_number(job), "Stopped", job->command);
+        } else {
+            printf("[%d]+  %-8s  %s\n", job_number(job), "Done", job->command);
+            job->used = 0;
+        }
+    }
 }
 
 /* Runs every line of an already-open stream. Used for `sh script` and for
@@ -344,6 +619,11 @@ int main(int argc, char** argv, char** envp)
     /* ^C interrupts whatever is running, not the shell itself. */
     signal(SIGINT, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
+    /* ^Z likewise -- and a shell that stopped itself on SIGTTOU while handing
+     * the terminal back and forth would deadlock the terminal it owns. */
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
 
     /* sh -c 'line': one command, no prompt. What system() would use. */
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
@@ -368,6 +648,30 @@ int main(int argc, char** argv, char** envp)
         return status;
     }
 
+    /*
+     * Job control needs three things and only makes sense with all of them: a
+     * terminal, a session to own it, and a group for the shell that is never
+     * the group of a job it starts. Without the last, ^C aimed at the
+     * foreground job would reach the shell as well.
+     *
+     * setsid() fails when the shell is already a group leader, which is the
+     * normal case for the shell init spawns -- that is fine, it just means the
+     * session already exists.
+     */
+    s_job_control = isatty(STDIN_FILENO);
+    if (s_job_control) {
+        (void)setsid();
+        s_shell_pgid = getpid();
+        if (setpgid(0, s_shell_pgid) < 0 && getpgrp() != s_shell_pgid) {
+            /* Cannot get a group of its own, so there is no safe way to hand
+             * the terminal to a job. Run without job control rather than
+             * signalling the shell along with everything it starts. */
+            s_job_control = 0;
+        }
+    }
+    if (s_job_control && tcsetpgrp(STDIN_FILENO, s_shell_pgid) < 0)
+        s_job_control = 0;
+
     struct utsname name;
     if (uname(&name) == 0)
         printf("%s %s on %s\n", name.sysname, name.release, name.machine);
@@ -377,6 +681,8 @@ int main(int argc, char** argv, char** envp)
     int should_exit = 0;
 
     while (!should_exit) {
+        reap_background_jobs();
+
         char cwd[256];
         if (!getcwd(cwd, sizeof(cwd)))
             strcpy(cwd, "?");
@@ -385,6 +691,14 @@ int main(int argc, char** argv, char** envp)
         fflush(stdout);
 
         if (!fgets(line, sizeof(line), stdin)) {
+            /* An interrupted read is not end of input. ^C at an idle prompt
+             * used to end the shell here, because a NULL from fgets looks the
+             * same either way until you ask which it was. */
+            if (errno == EINTR) {
+                clearerr(stdin);
+                printf("\n");
+                continue;
+            }
             /* End of input: ^D at the prompt. */
             printf("\n");
             break;

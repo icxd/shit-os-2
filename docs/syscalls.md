@@ -37,7 +37,7 @@ the top bit set.
 | 5 | `lseek` | `(int fd, off_t off, int whence)` | |
 | 6 | `fork` | `()` | Eager copy of the address space; COW is on the roadmap. |
 | 7 | `execve` | `(const char* path, char* const argv[], char* const envp[])` | Static ET_EXEC only. |
-| 8 | `waitpid` | `(pid_t pid, int* status, int options)` | `WNOHANG` supported. |
+| 8 | `waitpid` | `(pid_t pid, int* status, int options)` | `WNOHANG`, `WUNTRACED`, `WCONTINUED`. A negative pid waits on a process group. |
 | 9 | `getpid` | `()` | |
 | 10 | `getppid` | `()` | Orphans are reparented to pid 1. |
 | 11 | `brk` | `(void* address)` | `brk(0)` reports the current break. |
@@ -54,8 +54,8 @@ the top bit set.
 | 22 | `unlink` | `(const char* path)` | |
 | 23 | `chdir` | `(const char* path)` | |
 | 24 | `getcwd` | `(char* buf, size_t size)` | Rebuilt by walking parent pointers. |
-| 25 | `ioctl` | `(int fd, unsigned request, void* arg)` | Bounced through the kernel; devices never see a user pointer. |
-| 26 | `kill` | `(pid_t pid, int signal)` | Signal 0 is the existence check. |
+| 25 | `ioctl` | `(int fd, unsigned request, void* arg)` | Bounced through the kernel; devices never see a user pointer. `TIOCGPGRP`/`TIOCSPGRP` are how the terminal changes hands. |
+| 26 | `kill` | `(pid_t pid, int signal)` | Signal 0 is the existence check. A negative pid addresses a process group; `-1` is everything but init. |
 | 27 | `sigaction` | `(int sig, const struct sigaction*, struct sigaction*)` | libc fills in `sa_restorer`. |
 | 28 | `sigreturn` | `()` | Called by the libc restorer, never directly. |
 | 29 | `nanosleep` | `(time_t sec, long nsec)` | Rounded to the 4 ms tick. |
@@ -65,6 +65,10 @@ the top bit set.
 | 33 | `clock_gettime` | `(clockid_t, struct timespec*)` | `CLOCK_REALTIME` and `CLOCK_MONOTONIC`. Realtime reads as boot time until a driver registers a clock. |
 | 34 | `fcntl` | `(int fd, int cmd, ...)` | `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`. |
 | 35 | `rename` | `(const char* from, const char* to)` | `EXDEV` across filesystems; replaces an existing file atomically. |
+| 36 | `setpgid` | `(pid_t pid, pid_t pgid)` | Self or a not-yet-exec'd child, within one session. |
+| 37 | `getpgid` | `(pid_t pid)` | |
+| 38 | `setsid` | `()` | `EPERM` for a group leader. |
+| 39 | `getsid` | `(pid_t pid)` | |
 
 ## Extensions
 
@@ -87,9 +91,6 @@ A `/proc` filesystem should replace the first three; see
 Deliberately absent rather than stubbed, so a caller finds out at build time
 rather than by getting a plausible wrong answer:
 
-- Job control: process groups, sessions, `setpgid`, `tcsetpgrp`. `^C` goes to
-  whichever process last read the terminal, which covers the common case and
-  is not the same thing.
 - `select` / `poll`. The `poll_readable` device op exists for it.
 - Users and permissions. Everything runs as uid 0 and mode bits are recorded
   but never checked.

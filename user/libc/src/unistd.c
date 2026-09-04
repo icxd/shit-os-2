@@ -340,3 +340,59 @@ int fcntl(int fd, int command, ...)
 
     return (int)__syscall_return(__syscall3(SYS_fcntl, fd, command, argument));
 }
+
+/* --- job control --------------------------------------------------------
+ *
+ * A shell needs all of this to run a pipeline as one job: put the children in
+ * a group of their own, hand that group the terminal, and take it back when
+ * they stop or finish. Without it ^C reaches whichever process last read the
+ * terminal, which is nearly right and wrong in exactly the cases that matter.
+ */
+
+int setpgid(pid_t pid, pid_t pgid)
+{
+    return (int)__syscall_return(__syscall2(SYS_setpgid, pid, pgid));
+}
+
+pid_t getpgid(pid_t pid)
+{
+    return (pid_t)__syscall_return(__syscall1(SYS_getpgid, pid));
+}
+
+pid_t getpgrp(void)
+{
+    return getpgid(0);
+}
+
+pid_t setsid(void)
+{
+    return (pid_t)__syscall_return(__syscall0(SYS_setsid));
+}
+
+pid_t getsid(pid_t pid)
+{
+    return (pid_t)__syscall_return(__syscall1(SYS_getsid, pid));
+}
+
+pid_t tcgetpgrp(int fd)
+{
+    pid_t group = 0;
+    if (ioctl(fd, TIOCGPGRP, &group) < 0)
+        return -1;
+    return group;
+}
+
+int tcsetpgrp(int fd, pid_t pgid)
+{
+    return ioctl(fd, TIOCSPGRP, &pgid);
+}
+
+int killpg(pid_t pgid, int signal)
+{
+    if (pgid < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* kill() reads a negative pid as a group; 0 already means "my group". */
+    return kill(pgid == 0 ? 0 : -pgid, signal);
+}

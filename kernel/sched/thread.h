@@ -26,6 +26,7 @@ enum class ThreadState : u32 {
     Running, // on a CPU right now
     Blocked, // waiting on a wait queue
     Sleeping, // waiting for a deadline
+    Stopped, // suspended by a job control signal, waiting for SIGCONT
     Zombie, // finished, waiting to be reaped
 };
 
@@ -89,6 +90,27 @@ private:
     u32 m_tid { 0 };
     char m_name[THREAD_NAME_MAX] {};
     ThreadState m_state { ThreadState::Ready };
+
+public:
+    // --- interrupted system calls ---
+    //
+    // A syscall that returned EINTR can be restarted, but only the syscall
+    // path knows which call it was and only the signal path knows whether the
+    // signal actually did anything to the process. These two carry that fact
+    // from one to the other.
+    //
+    // `syscall` is two bytes, so restarting means rewinding rip past it and
+    // putting the call number back in rax -- the return value overwrote it.
+    static constexpr usize SYSCALL_INSTRUCTION_LENGTH = 2;
+
+    void set_restartable_syscall(u64 number) { m_restartable_syscall = number; }
+    void clear_restartable_syscall() { m_restartable_syscall = NO_RESTART; }
+    bool has_restartable_syscall() const { return m_restartable_syscall != NO_RESTART; }
+    u64 restartable_syscall() const { return m_restartable_syscall; }
+
+private:
+    static constexpr u64 NO_RESTART = ~0ULL;
+    u64 m_restartable_syscall { NO_RESTART };
     Process* m_process { nullptr };
 
     InterruptFrame* m_frame { nullptr };

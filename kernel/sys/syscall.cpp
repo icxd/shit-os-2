@@ -451,7 +451,8 @@ ErrorOr<u64> sys_waitpid(InterruptFrame&, u64 pid, u64 status_pointer, u64 optio
 {
     auto* process = Process::current();
     int status = 0;
-    auto reaped = process->reap_child(static_cast<pid_t>(pid), status, (options & WNOHANG) == 0);
+    auto reaped = process->reap_child(
+        static_cast<pid_t>(pid), status, (options & WNOHANG) == 0, static_cast<int>(options));
 
     if (reaped.is_error()) {
         // WNOHANG with a live child is "nothing to report", not an error.
@@ -772,16 +773,88 @@ ErrorOr<u64> sys_ioctl(InterruptFrame&, u64 fd, u64 request, u64 argument, u64, 
     return static_cast<u64>(result.value());
 }
 
-ErrorOr<u64> sys_kill(InterruptFrame&, u64 pid, u64 signal, u64, u64, u64, u64)
+void raise_on(Process& process, void* context)
 {
-    auto* target = Process::by_pid(static_cast<pid_t>(pid));
+    process.raise_signal(*static_cast<int*>(context));
+}
+
+ErrorOr<u64> sys_kill(InterruptFrame&, u64 pid_argument, u64 signal, u64, u64, u64, u64)
+{
+    auto const pid = static_cast<pid_t>(pid_argument);
+    int number = static_cast<int>(signal);
+    if (number < 0 || number >= NSIG)
+        return Error::from_errno(EINVAL);
+
+    auto* caller = Process::current();
+
+    // A negative pid addresses a process group, which is what makes ^C reach a
+    // pipeline rather than whichever member of it happened to be reading.
+    if (pid < -1 || pid == 0) {
+        pid_t const group = pid == 0 ? caller->pgid() : -pid;
+        if (!Process::group_exists(group))
+            return Error::from_errno(ESRCH);
+        if (number == 0)
+            return static_cast<u64>(0);
+        Process::for_each_in_group(group, raise_on, &number);
+        return static_cast<u64>(0);
+    }
+
+    if (pid == -1) {
+        // Every process the caller may signal, which here is everything but
+        // init and the caller itself -- killing pid 1 would end userland.
+        if (number == 0)
+            return static_cast<u64>(0);
+        struct Broadcast {
+            int signal;
+            pid_t caller_pid;
+        } broadcast { number, caller->pid() };
+
+        Process::for_each(
+            [](Process& process, void* context) {
+                auto const& state = *static_cast<Broadcast*>(context);
+                if (process.pid() <= 1 || process.pid() == state.caller_pid)
+                    return;
+                process.raise_signal(state.signal);
+            },
+            &broadcast);
+        return static_cast<u64>(0);
+    }
+
+    auto* target = Process::by_pid(pid);
     if (target == nullptr)
         return Error::from_errno(ESRCH);
-    if (signal == 0)
+    if (number == 0)
         return static_cast<u64>(0); // the existence check form of kill(2)
 
-    target->raise_signal(static_cast<int>(signal));
+    target->raise_signal(number);
     return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_setpgid(InterruptFrame&, u64 pid, u64 pgid, u64, u64, u64, u64)
+{
+    TRY(Process::set_process_group(static_cast<pid_t>(pid), static_cast<pid_t>(pgid)));
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_getpgid(InterruptFrame&, u64 pid, u64, u64, u64, u64, u64)
+{
+    auto* target = pid == 0 ? Process::current() : Process::by_pid(static_cast<pid_t>(pid));
+    if (target == nullptr)
+        return Error::from_errno(ESRCH);
+    return static_cast<u64>(target->pgid());
+}
+
+ErrorOr<u64> sys_setsid(InterruptFrame&, u64, u64, u64, u64, u64, u64)
+{
+    return static_cast<u64>(TRY(Process::current()->start_session()));
+}
+
+ErrorOr<u64> sys_getsid(InterruptFrame&, u64 pid, u64, u64, u64, u64, u64)
+{
+    auto* target = pid == 0 ? Process::current() : Process::by_pid(static_cast<pid_t>(pid));
+    if (target == nullptr)
+        return Error::from_errno(ESRCH);
+    return static_cast<u64>(target->sid());
 }
 
 ErrorOr<u64> sys_sigaction(
@@ -796,6 +869,7 @@ ErrorOr<u64> sys_sigaction(
         struct sigaction previous = {};
         previous.sa_handler = reinterpret_cast<void (*)(int)>(process->signal_disposition(number));
         previous.sa_restorer = reinterpret_cast<void (*)()>(process->signal_restorer(number));
+        previous.sa_flags = process->signal_flags(number);
         TRY(copy_to_user(old_pointer, &previous, sizeof(previous)));
     }
 
@@ -803,7 +877,7 @@ ErrorOr<u64> sys_sigaction(
         struct sigaction action = {};
         TRY(copy_from_user(&action, action_pointer, sizeof(action)));
         process->set_signal_action(number, reinterpret_cast<void*>(action.sa_handler),
-            reinterpret_cast<void*>(action.sa_restorer));
+            reinterpret_cast<void*>(action.sa_restorer), action.sa_flags);
     }
 
     return static_cast<u64>(0);
@@ -1127,6 +1201,10 @@ SyscallHandler const POSIX_SYSCALLS[SYS_MAX_POSIX] = {
     [SYS_clock_gettime] = sys_clock_gettime,
     [SYS_fcntl] = sys_fcntl,
     [SYS_rename] = sys_rename,
+    [SYS_setpgid] = sys_setpgid,
+    [SYS_getpgid] = sys_getpgid,
+    [SYS_setsid] = sys_setsid,
+    [SYS_getsid] = sys_getsid,
 };
 
 #pragma clang diagnostic pop
@@ -1145,12 +1223,45 @@ SyscallHandler const EXTENSION_SYSCALLS[SYS_MAX_EXT] = {
 bool signal_terminates_by_default(int signal)
 {
     switch (signal) {
+    // Ignored by default.
     case SIGCHLD:
-    case SIGCONT:
     case SIGURG:
-    case SIGWINCH: return false;
+    case SIGWINCH:
+    // Handled by default, but not by dying.
+    case SIGCONT:
+    case SIGSTOP:
+    case SIGTSTP:
+    case SIGTTIN:
+    case SIGTTOU: return false;
     default: return true;
     }
+}
+
+bool signal_stops_by_default(int signal)
+{
+    switch (signal) {
+    case SIGSTOP: // cannot be caught or ignored
+    case SIGTSTP: // ^Z
+    case SIGTTIN: // a background job read the terminal
+    case SIGTTOU: // ...or wrote to it with TOSTOP set
+        return true;
+    default: return false;
+    }
+}
+
+// Puts an interrupted system call back so it runs again. Only ever called
+// when the signal left the process running -- a call that returned EINTR to a
+// program that then handled nothing, ignored the signal, or was stopped and
+// continued, never happened as far as that program should be able to tell.
+void restart_interrupted_syscall(InterruptFrame* frame)
+{
+    auto* thread = Scheduler::current();
+    if (thread == nullptr || !thread->has_restartable_syscall())
+        return;
+
+    frame->rax = thread->restartable_syscall();
+    frame->rip -= Thread::SYSCALL_INSTRUCTION_LENGTH;
+    thread->clear_restartable_syscall();
 }
 
 InterruptFrame* deliver_pending_signal(InterruptFrame* frame)
@@ -1165,12 +1276,48 @@ InterruptFrame* deliver_pending_signal(InterruptFrame* frame)
 
     void* handler = process->signal_disposition(signal);
 
-    if (handler == SIG_IGN)
+    // SIGKILL and SIGSTOP cannot be caught or ignored. That is the whole
+    // reason they exist, so the disposition is not even consulted.
+    if (signal == SIGKILL)
+        do_exit(W_SIGNALLED(SIGKILL));
+    if (signal == SIGSTOP) {
+        process->stop(SIGSTOP);
+        restart_interrupted_syscall(frame);
         return frame;
+    }
+
+    // SIGCONT resumes before anything else looks at the disposition: a
+    // stopped process is not running to catch it, and continuing is what
+    // makes it able to.
+    if (signal == SIGCONT) {
+        process->resume();
+        if (handler == SIG_IGN || handler == SIG_DFL) {
+            restart_interrupted_syscall(frame);
+            return frame;
+        }
+        // A caught SIGCONT still runs its handler, once running again.
+    }
+
+    if (handler == SIG_IGN) {
+        // Nothing happened as far as the program is concerned, so a call this
+        // signal interrupted should not report that it was interrupted.
+        restart_interrupted_syscall(frame);
+        return frame;
+    }
 
     if (handler == SIG_DFL) {
-        if (!signal_terminates_by_default(signal))
+        if (signal_stops_by_default(signal)) {
+            process->stop(signal);
+            // Continued now, and the read it was in the middle of should
+            // resume rather than surface EINTR to a program that never saw
+            // anything happen.
+            restart_interrupted_syscall(frame);
             return frame;
+        }
+        if (!signal_terminates_by_default(signal)) {
+            restart_interrupted_syscall(frame);
+            return frame;
+        }
         // The low byte of a wait status is the terminating signal.
         do_exit(signal & 0x7F);
     }
@@ -1204,6 +1351,24 @@ InterruptFrame* deliver_pending_signal(InterruptFrame* frame)
         // The stack is unusable, which is usually a stack overflow. There is
         // nowhere to report it to, so terminate.
         do_exit(SIGSEGV & 0x7F);
+    }
+
+    // SA_RESTART means the handler is not supposed to be visible to a call
+    // that was in progress. The context pushed above is the one sigreturn
+    // restores, so the rewind has to happen there rather than here -- the
+    // frame this function is editing is about to be replaced by the handler's.
+    if ((process->signal_flags(signal) & SA_RESTART) != 0) {
+        auto* thread = Scheduler::current();
+        if (thread != nullptr && thread->has_restartable_syscall()) {
+            auto* saved = reinterpret_cast<SignalContext*>(context_address);
+            InterruptFrame restarted = context.frame;
+            restarted.rax = thread->restartable_syscall();
+            restarted.rip -= Thread::SYSCALL_INSTRUCTION_LENGTH;
+            thread->clear_restartable_syscall();
+            if (copy_to_user(reinterpret_cast<u64>(&saved->frame), &restarted, sizeof(restarted))
+                    .is_error())
+                do_exit(W_SIGNALLED(SIGSEGV));
+        }
     }
 
     frame->rsp = stack;
@@ -1240,6 +1405,10 @@ extern "C" kernel::InterruptFrame* syscall_dispatch(kernel::InterruptFrame* fram
     else if (number >= SYS_EXT_BASE && number < SYS_EXT_BASE + SYS_MAX_EXT)
         handler = EXTENSION_SYSCALLS[number - SYS_EXT_BASE];
 
+    auto* thread = Scheduler::current();
+    if (thread != nullptr)
+        thread->clear_restartable_syscall();
+
     if (handler == nullptr) {
         klog(LOG_WARN, "syscall", "%s called unimplemented syscall %llu",
             Process::current()->name(), number);
@@ -1249,10 +1418,16 @@ extern "C" kernel::InterruptFrame* syscall_dispatch(kernel::InterruptFrame* fram
         // clobbers rcx with the return address.
         auto result
             = handler(*frame, frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8, frame->r9);
-        if (result.is_error())
+        if (result.is_error()) {
             frame->rax = static_cast<u64>(-result.error().code());
-        else
+            // Remember that this one can be taken again. Whether it is depends
+            // on what the signal turns out to do, which only the delivery path
+            // below knows.
+            if (result.error().code() == EINTR && thread != nullptr)
+                thread->set_restartable_syscall(number);
+        } else {
             frame->rax = result.value();
+        }
     }
 
     return deliver_pending_signal(frame);

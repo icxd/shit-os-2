@@ -32,10 +32,12 @@ public:
     int ioctl(u32 request, void* argument);
     bool has_line_ready() const;
 
-    // Which process gets ^C. Set by the shell via TIOCSPGRP eventually; for
-    // now the last process to read from the terminal owns it.
-    void set_foreground_pid(i32 pid) { m_foreground_pid = pid; }
-    i32 foreground_pid() const { return m_foreground_pid; }
+    // Which process *group* owns the terminal. A shell sets it with TIOCSPGRP
+    // as it starts and stops jobs; everything else about job control follows
+    // from it. ^C goes to this group, and a read from any other group stops
+    // the reader with SIGTTIN rather than stealing input from the foreground.
+    void set_foreground_group(i32 pgid) { m_foreground_group = pgid; }
+    i32 foreground_group() const { return m_foreground_group; }
 
 private:
     friend void tty_input_thread(void*);
@@ -55,9 +57,13 @@ private:
     usize m_ready_head { 0 };
     usize m_ready_tail { 0 };
 
+    // Sends `signal` to every process in the foreground group, which is what
+    // makes ^C reach a whole pipeline rather than one member of it.
+    void signal_foreground_group(int signal);
+
     fs::Inode* m_keyboard { nullptr };
     WaitQueue m_readers;
-    i32 m_foreground_pid { 0 };
+    i32 m_foreground_group { 0 };
     bool m_saw_eof { false };
 };
 

@@ -16,6 +16,14 @@
 #define TCSETS 0x5402
 #define TIOCGWINSZ 0x5413
 
+/*
+ * Which process group owns the terminal. Everything about job control comes
+ * back to these two: the foreground group is the one that gets ^C, and the
+ * one allowed to read without being stopped.
+ */
+#define TIOCGPGRP 0x540F
+#define TIOCSPGRP 0x5410
+
 struct winsize {
     u16 ws_row;
     u16 ws_col;
@@ -51,5 +59,8 @@ struct termios {
 #define VERASE 2
 #define VKILL 3
 #define VEOF 4
-#define VMIN 6
 #define VTIME 5
+#define VMIN 6
+/* ^Z. Linux numbers it 10, and matching that costs nothing and means a
+ * ported program that hardcodes the index gets the right control character. */
+#define VSUSP 10

@@ -14,6 +14,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -238,6 +239,241 @@ static void test_stat_times(void)
     unlink("/tmp/stamped.txt");
 }
 
+/* --- job control -------------------------------------------------------- */
+
+/* Waits for a status change with a bound, so a kernel bug fails the test
+ * rather than hanging the boot. */
+static pid_t wait_bounded(pid_t pid, int* status, int options)
+{
+    for (int attempt = 0; attempt < 500; ++attempt) {
+        pid_t const result = waitpid(pid, status, options | WNOHANG);
+        if (result != 0)
+            return result;
+        usleep(4000);
+    }
+    return -1;
+}
+
+static void test_process_groups(void)
+{
+    pid_t const self = getpid();
+    check(getpgrp() == getpgid(0), "getpgrp agrees with getpgid(0)");
+    check(getsid(0) > 0, "the process is in a session");
+
+    /* A child starts in its parent's job, which is what makes a pipeline one
+     * group without anyone arranging it. */
+    pid_t child = fork();
+    if (child == 0)
+        _exit(getpgid(0) == getpgid(getppid()) ? 0 : 1);
+    int status = 0;
+    wait_bounded(child, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "a child inherits its parent's group");
+
+    /* ...and can leave it, which is what a shell does to make a job. */
+    child = fork();
+    if (child == 0) {
+        if (setpgid(0, 0) < 0)
+            _exit(1);
+        _exit(getpgid(0) == getpid() ? 0 : 2);
+    }
+    /* Both sides call setpgid, because either may run first and the parent
+     * must be able to signal the group immediately. */
+    setpgid(child, child);
+    check(getpgid(child) == child, "the parent sees the child's new group");
+    wait_bounded(child, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "setpgid(0, 0) makes a child a leader");
+
+    check(setpgid(999999, 0) == -1 && errno == ESRCH, "setpgid on a missing process is ESRCH");
+    (void)self;
+}
+
+/* kill(-pgid) has to reach every member, which is the whole reason ^C works
+ * on a pipeline rather than on whichever member last read the terminal. */
+static void test_group_signals(void)
+{
+    pid_t group = 0;
+    pid_t children[3];
+
+    for (int i = 0; i < 3; ++i) {
+        pid_t const child = fork();
+        if (child == 0) {
+            setpgid(0, group != 0 ? group : 0);
+            /* Sleep long enough that the signal is what ends this, not the
+             * clock. */
+            for (int spin = 0; spin < 1000; ++spin)
+                usleep(10000);
+            _exit(0);
+        }
+        if (group == 0)
+            group = child;
+        setpgid(child, group);
+        children[i] = child;
+    }
+
+    check(killpg(group, SIGTERM) == 0, "killpg signals the group");
+
+    int reached = 0;
+    for (int i = 0; i < 3; ++i) {
+        int status = 0;
+        if (wait_bounded(children[i], &status, 0) == children[i] && WIFSIGNALED(status)
+            && WTERMSIG(status) == SIGTERM)
+            ++reached;
+    }
+    check(reached == 3, "every process in the group got it");
+}
+
+static void test_stop_and_continue(void)
+{
+    pid_t const child = fork();
+    if (child == 0) {
+        setpgid(0, 0);
+        /* Long enough that only a signal ends it. */
+        for (int spin = 0; spin < 2000; ++spin)
+            usleep(10000);
+        _exit(3);
+    }
+    setpgid(child, child);
+
+    check(kill(child, SIGSTOP) == 0, "SIGSTOP a running child");
+
+    int status = 0;
+    check(wait_bounded(child, &status, WUNTRACED) == child, "waitpid WUNTRACED reports the stop");
+    check(WIFSTOPPED(status), "and the status says stopped");
+    check(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP, "with the signal that did it");
+    check(!WIFEXITED(status) && !WIFSIGNALED(status),
+        "a stopped status is neither exited nor signalled");
+
+    /* A stopped process is not running to deliver its own SIGCONT, so the
+     * kernel has to act on it at the moment it is raised. */
+    check(kill(child, SIGCONT) == 0, "SIGCONT a stopped child");
+    check(wait_bounded(child, &status, WCONTINUED) == child, "waitpid WCONTINUED reports it");
+    check(WIFCONTINUED(status), "and the status says continued");
+
+    /* Same for SIGKILL: a stopped process must still be killable. */
+    check(kill(child, SIGSTOP) == 0, "stop it again");
+    check(wait_bounded(child, &status, WUNTRACED) == child, "the second stop is reported");
+    check(kill(child, SIGKILL) == 0, "SIGKILL a stopped child");
+    check(wait_bounded(child, &status, 0) == child, "and it actually dies");
+    check(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL, "killed by SIGKILL");
+}
+
+static volatile int s_caught_tstp;
+
+static void catch_tstp(int signal)
+{
+    (void)signal;
+    s_caught_tstp = 1;
+}
+
+/* SIGTSTP stops by default but can be caught; SIGSTOP cannot be caught at
+ * all. That difference is what lets an editor save its state on ^Z. */
+static void test_stop_signal_dispositions(void)
+{
+    pid_t const child = fork();
+    if (child == 0) {
+        signal(SIGTSTP, catch_tstp);
+        setpgid(0, 0);
+        for (int spin = 0; spin < 500 && !s_caught_tstp; ++spin)
+            usleep(4000);
+        _exit(s_caught_tstp ? 0 : 1);
+    }
+    setpgid(child, child);
+    usleep(20000);
+
+    check(kill(child, SIGTSTP) == 0, "SIGTSTP a child that catches it");
+    int status = 0;
+    check(wait_bounded(child, &status, WUNTRACED) == child, "the child reports something");
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "a caught SIGTSTP runs the handler instead of stopping");
+}
+
+/* A background job that reads the terminal is stopped rather than allowed to
+ * steal input the foreground job is waiting for. */
+static void test_background_read(void)
+{
+    /*
+     * /etc/rc runs this from a non-interactive shell, which by POSIX does no
+     * job control -- so nothing has claimed the terminal and there is no
+     * foreground group to be in the background of. Claim it here, which is
+     * exactly what an interactive shell would have done.
+     */
+    if (!isatty(STDIN_FILENO))
+        return;
+    if (tcsetpgrp(STDIN_FILENO, getpgrp()) < 0)
+        return;
+
+    pid_t const foreground = tcgetpgrp(STDIN_FILENO);
+    check(foreground == getpgrp(), "this process group owns the terminal");
+
+    pid_t const child = fork();
+    if (child == 0) {
+        setpgid(0, 0); /* leaves the foreground group */
+        char scratch[1];
+        /* Must not block: the kernel signals rather than queues us behind the
+         * foreground reader. */
+        (void)read(STDIN_FILENO, scratch, sizeof(scratch));
+        _exit(0);
+    }
+    setpgid(child, child);
+
+    int status = 0;
+    check(wait_bounded(child, &status, WUNTRACED) == child, "the background reader reports");
+    check(WIFSTOPPED(status) && WSTOPSIG(status) == SIGTTIN,
+        "reading the terminal from the background stops the reader with SIGTTIN");
+
+    kill(child, SIGKILL);
+    wait_bounded(child, &status, 0);
+
+    /* The terminal must still belong to whoever had it. */
+    check(tcgetpgrp(STDIN_FILENO) == foreground, "and the terminal did not change hands");
+}
+
+static void test_terminal_ownership(void)
+{
+    if (!isatty(STDIN_FILENO))
+        return;
+
+    pid_t const original = tcgetpgrp(STDIN_FILENO);
+    check(tcsetpgrp(STDIN_FILENO, getpgrp()) == 0, "tcsetpgrp to our own group");
+    check(tcgetpgrp(STDIN_FILENO) == getpgrp(), "tcgetpgrp reads it back");
+
+    /* Handing the terminal to a group that does not exist would leave it owned
+     * by nothing, and every later read would stop its caller. */
+    check(tcsetpgrp(STDIN_FILENO, 999999) == -1, "tcsetpgrp refuses a group that does not exist");
+    check(tcgetpgrp(STDIN_FILENO) == getpgrp(), "and left the owner alone");
+
+    if (original > 0)
+        tcsetpgrp(STDIN_FILENO, original);
+}
+
+static void test_sessions(void)
+{
+    /* A group leader cannot start a session: its group would end up split
+     * across two, which is the one thing the hierarchy forbids. */
+    pid_t const child = fork();
+    if (child == 0) {
+        setpgid(0, 0); /* now a group leader */
+        if (setsid() != -1 || errno != EPERM)
+            _exit(1);
+
+        /* A grandchild is not a leader, so it can. */
+        pid_t const grandchild = fork();
+        if (grandchild == 0) {
+            pid_t const session = setsid();
+            _exit(session == getpid() && getsid(0) == getpid() ? 0 : 2);
+        }
+        int status = 0;
+        waitpid(grandchild, &status, 0);
+        _exit(WIFEXITED(status) ? WEXITSTATUS(status) : 3);
+    }
+    setpgid(child, child);
+
+    int status = 0;
+    wait_bounded(child, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "setsid is refused for a group leader and allowed for anyone else");
+}
+
 int main(int argc, char** argv, char** envp)
 {
     (void)envp;
@@ -251,6 +487,13 @@ int main(int argc, char** argv, char** envp)
     test_rename();
     test_clock();
     test_stat_times();
+    test_process_groups();
+    test_group_signals();
+    test_stop_and_continue();
+    test_stop_signal_dispositions();
+    test_background_read();
+    test_terminal_ownership();
+    test_sessions();
 
     printf("%d passed, %d failed\n", s_checks - s_failures, s_failures);
     return s_failures == 0 ? 0 : 1;
