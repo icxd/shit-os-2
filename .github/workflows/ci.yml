@@ -123,6 +123,23 @@ jobs:
         # on the host, of the same stdlib.c that ships.
         run: ./tools/check-malloc.sh
 
+  regex:
+    name: regex engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm
+
+      - name: Compare against glibc's regex
+        # grep, sed and awk are only as correct as this is, and "leftmost
+        # longest" has enough corner cases that the way to find out is to ask
+        # a mature implementation the same several thousand questions.
+        run: ./tools/check-regex.sh
+
   format:
     name: formatting
     runs-on: ubuntu-latest
