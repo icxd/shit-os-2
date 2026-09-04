@@ -36,6 +36,14 @@ int rmdir(const char* path);
 int unlink(const char* path);
 
 int isatty(int fd);
+
+/* There is no permission model yet, so access() answers "does it exist and is
+ * it the right kind of thing", which is what every caller here wants. */
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+int access(const char* path, int mode);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
 

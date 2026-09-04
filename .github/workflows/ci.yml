@@ -59,6 +59,22 @@ jobs:
             exit 1
           fi
 
+      - name: Check the userland suite passed
+        # /etc/rc runs the ring 3 suite before the shell comes up: the libc and
+        # Lua checks, and the file-lifetime regressions. Any "N failed" with a
+        # non-zero N is a failure, and so is the suite not running at all.
+        run: |
+          echo "--- userland suite ---"
+          grep -E 'passed, [0-9]+ failed|FAIL ' boot.log || true
+          if ! grep -q 'userland suite done' boot.log; then
+            echo "::error::the userland suite did not finish"
+            exit 1
+          fi
+          if grep -qE 'passed, [1-9][0-9]* failed' boot.log; then
+            echo "::error::a userland check failed"
+            exit 1
+          fi
+
       - name: Keep the image
         if: always()
         uses: actions/upload-artifact@v4

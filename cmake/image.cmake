@@ -14,6 +14,11 @@ set(INITRD_PATH "${CMAKE_BINARY_DIR}/initrd.tar")
 # userland programs register themselves here as they are declared.
 get_property(SHITOS_IMAGE_TARGETS GLOBAL PROPERTY SHITOS_IMAGE_TARGETS)
 
+# Everything under rootfs/ is copied into the image verbatim, so touching any
+# of it has to repack. CONFIGURE_DEPENDS makes cmake re-glob when a file is
+# added rather than silently shipping a stale archive.
+file(GLOB_RECURSE SHITOS_ROOTFS_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/rootfs/*")
+
 # The initrd is a plain ustar archive. `tar` is the tool; there is no bespoke
 # image format to learn, and you can inspect a broken one with tar -tvf.
 add_custom_command(
@@ -24,7 +29,7 @@ add_custom_command(
             "SHITOS_BUILD_DIR=${CMAKE_BINARY_DIR}"
             "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" "${INITRD_PATH}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" ${SHITOS_IMAGE_TARGETS}
-            "${CMAKE_SOURCE_DIR}/rootfs/usr/share/lua/selftest.lua"
+            ${SHITOS_ROOTFS_FILES}
     COMMENT "Packing initrd"
     VERBATIM
 )

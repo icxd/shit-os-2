@@ -311,3 +311,16 @@ sighandler_t signal(int number, sighandler_t handler)
         return SIG_ERR;
     return old.sa_handler;
 }
+
+int access(const char* path, int mode)
+{
+    struct stat status;
+    if (stat(path, &status) < 0)
+        return -1;
+
+    /* Everything runs as root and no mode bits are enforced, so the only
+     * question left is whether a directory was asked to be executable --
+     * which it always is -- or a plain file, which is never refused. */
+    (void)mode;
+    return 0;
+}

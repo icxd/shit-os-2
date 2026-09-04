@@ -1,0 +1,6 @@
+# shit os 2 -- run by init at boot, before the interactive shell.
+#
+# The kernel already checks its own invariants before userland exists; this is
+# where the same idea continues into ring 3. Boot is loud on purpose: a broken
+# syscall should be obvious from the console, not from a test run nobody does.
+sh /tests/run.sh

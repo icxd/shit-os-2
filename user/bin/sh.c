@@ -50,6 +50,12 @@ static int tokenize(char* line, char** tokens, int capacity)
         if (!*cursor)
             break;
 
+        /* An unquoted # starts a comment, which is the rest of the line.
+         * Scripts are full of them; interactive lines rarely are, but the
+         * rule is the same either way. */
+        if (*cursor == '#')
+            break;
+
         char quote = 0;
         if (*cursor == '"' || *cursor == '\'') {
             quote = *cursor;
@@ -314,15 +320,53 @@ static void run_line(char* line, int* should_exit)
     s_last_status = run_pipeline(commands, command_count);
 }
 
+/* Runs every line of an already-open stream. Used for `sh script` and for
+ * /etc/rc, neither of which wants a prompt or a banner. */
+static int run_stream(FILE* stream)
+{
+    char line[LINE_MAX];
+    int should_exit = 0;
+
+    while (!should_exit && fgets(line, sizeof(line), stream)) {
+        size_t const length = strlen(line);
+        if (length > 0 && line[length - 1] == '\n')
+            line[length - 1] = '\0';
+        run_line(line, &should_exit);
+    }
+
+    return s_last_status;
+}
+
 int main(int argc, char** argv, char** envp)
 {
-    (void)argc;
-    (void)argv;
     (void)envp;
 
     /* ^C interrupts whatever is running, not the shell itself. */
     signal(SIGINT, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
+
+    /* sh -c 'line': one command, no prompt. What system() would use. */
+    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
+        int should_exit = 0;
+        char line[LINE_MAX];
+        strncpy(line, argv[2], sizeof(line) - 1);
+        line[sizeof(line) - 1] = '\0';
+        run_line(line, &should_exit);
+        return s_last_status;
+    }
+
+    /* sh script: run it and stop. This is how /etc/rc runs at boot and how
+     * the test suite drives the system without a keyboard. */
+    if (argc >= 2) {
+        FILE* script = fopen(argv[1], "r");
+        if (!script) {
+            fprintf(stderr, "sh: %s: %s\n", argv[1], strerror(errno));
+            return 127;
+        }
+        int const status = run_stream(script);
+        fclose(script);
+        return status;
+    }
 
     struct utsname name;
     if (uname(&name) == 0)

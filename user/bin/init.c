@@ -28,6 +28,33 @@ static void print_motd(void)
     close(fd);
 }
 
+/*
+ * If /etc/rc exists, run it to completion before the interactive shell comes
+ * up. This is the only way to get work done at boot on a machine with no way
+ * to script the keyboard, which is what the regression suite needs.
+ */
+static void run_boot_script(void)
+{
+    if (access("/etc/rc", R_OK) != 0)
+        return;
+
+    pid_t const child = fork();
+    if (child < 0) {
+        perror("init: fork");
+        return;
+    }
+
+    if (child == 0) {
+        char* argv[] = { (char*)"/bin/sh", (char*)"/etc/rc", 0 };
+        execve("/bin/sh", argv, environ);
+        _exit(127);
+    }
+
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0)
+        ;
+}
+
 static pid_t spawn_shell(void)
 {
     pid_t const child = fork();
@@ -60,6 +87,8 @@ int main(int argc, char** argv, char** envp)
     printf("\n");
     print_motd();
     printf("\n");
+
+    run_boot_script();
 
     pid_t shell = spawn_shell();
 
