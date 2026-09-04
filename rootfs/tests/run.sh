@@ -5,6 +5,8 @@
 # libc, and the ported software that exercises both harder than we would.
 echo "--- posix surface"
 usertest
+echo "--- posix shell (dash)"
+dash /tests/shell.sh
 echo "--- lua and libc"
 lua /usr/share/lua/selftest.lua
 echo "--- file lifetime"

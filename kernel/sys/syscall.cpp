@@ -297,8 +297,11 @@ ErrorOr<u64> sys_open(InterruptFrame&, u64 path_pointer, u64 flags, u64 mode, u6
     TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
 
     auto* process = Process::current();
-    auto* description = TRY(fs::open(
-        path, static_cast<int>(flags), static_cast<u32>(mode), process->working_directory()));
+    // The file creation mask clears the bits the caller asked for but the
+    // process has said it does not want given away.
+    auto const permissions = static_cast<u32>(mode) & ~process->umask();
+    auto* description
+        = TRY(fs::open(path, static_cast<int>(flags), permissions, process->working_directory()));
 
     auto fd = process->allocate_descriptor(description);
     if (fd.is_error()) {
@@ -630,7 +633,7 @@ ErrorOr<u64> sys_mkdir(InterruptFrame&, u64 path_pointer, u64 mode, u64, u64, u6
     if (parent->filesystem() != nullptr && parent->filesystem()->is_read_only())
         return Error::from_errno(EROFS);
 
-    TRY(parent->create(name, fs::InodeType::Directory, static_cast<u32>(mode)));
+    TRY(parent->create(name, fs::InodeType::Directory, static_cast<u32>(mode) & ~process->umask()));
     return static_cast<u64>(0);
 }
 
@@ -908,7 +911,21 @@ ErrorOr<u64> sys_sigreturn(InterruptFrame& frame, u64, u64, u64, u64, u64, u64)
 ErrorOr<u64> sys_nanosleep(InterruptFrame&, u64 seconds, u64 nanoseconds, u64, u64, u64, u64)
 {
     u64 const milliseconds = seconds * 1000 + nanoseconds / 1000000;
-    Scheduler::sleep_ms(milliseconds);
+    u64 const deadline = clock_monotonic_ns() + milliseconds * 1'000'000;
+
+    // Sleep in slices and look for signals between them. Sleeping the whole
+    // duration in one call would mean ^C could not interrupt `sleep 5`, which
+    // is the single most common thing anyone does to a sleeping program. The
+    // tick is 4 ms, so slicing at the tick costs nothing.
+    auto* process = Process::current();
+    while (clock_monotonic_ns() < deadline) {
+        u64 const left_ns = deadline - clock_monotonic_ns();
+        u64 const slice = left_ns / 1'000'000 < 4 ? 1 : 4;
+        Scheduler::sleep_ms(slice);
+
+        if (process != nullptr && process->has_pending_signals())
+            return Error::from_errno(EINTR);
+    }
     return static_cast<u64>(0);
 }
 
@@ -1092,6 +1109,30 @@ ErrorOr<u64> sys_poll(InterruptFrame&, u64 pointer, u64 count, u64 timeout_ms, u
         if (process->has_pending_signals())
             return Error::from_errno(EINTR);
     }
+}
+
+ErrorOr<u64> sys_sigprocmask(
+    InterruptFrame&, u64 how, u64 set_pointer, u64 old_pointer, u64, u64, u64)
+{
+    auto* process = Process::current();
+
+    // A null set means "tell me the current mask and change nothing", which is
+    // how a caller reads it without a separate call.
+    u64 wanted = 0;
+    if (set_pointer != 0)
+        TRY(copy_from_user(&wanted, set_pointer, sizeof(wanted)));
+
+    u64 const previous = set_pointer != 0 ? process->set_signal_mask(static_cast<int>(how), wanted)
+                                          : process->signal_mask();
+
+    if (old_pointer != 0)
+        TRY(copy_to_user(old_pointer, &previous, sizeof(previous)));
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_umask(InterruptFrame&, u64 mask, u64, u64, u64, u64, u64)
+{
+    return static_cast<u64>(Process::current()->set_umask(static_cast<u32>(mask)));
 }
 
 // --- extensions ---------------------------------------------------------
@@ -1291,6 +1332,8 @@ SyscallHandler const POSIX_SYSCALLS[SYS_MAX_POSIX] = {
     [SYS_setsid] = sys_setsid,
     [SYS_getsid] = sys_getsid,
     [SYS_poll] = sys_poll,
+    [SYS_sigprocmask] = sys_sigprocmask,
+    [SYS_umask] = sys_umask,
 };
 
 #pragma clang diagnostic pop
@@ -1411,6 +1454,10 @@ InterruptFrame* deliver_pending_signal(InterruptFrame* frame)
     // A real handler. Push the interrupted context onto the user stack and
     // arrange for the handler to run with the restorer as its return address;
     // the restorer calls sigreturn, which puts the context back.
+    // No trampoline means no way back out of the handler, and jumping to a
+    // handler that cannot return would hang the process on its next
+    // instruction. libc always supplies one; a program calling the syscall
+    // directly might not.
     void* restorer = process->signal_restorer(signal);
     if (restorer == nullptr) {
         // No way back out of the handler, so honouring it would hang the
@@ -1509,7 +1556,11 @@ extern "C" kernel::InterruptFrame* syscall_dispatch(kernel::InterruptFrame* fram
             // Remember that this one can be taken again. Whether it is depends
             // on what the signal turns out to do, which only the delivery path
             // below knows.
-            if (result.error().code() == EINTR && thread != nullptr)
+            // nanosleep is the exception POSIX carves out: it reports the
+            // interruption even under SA_RESTART, because restarting it would
+            // silently sleep for longer than asked. Everything else may be
+            // taken again.
+            if (result.error().code() == EINTR && thread != nullptr && number != SYS_nanosleep)
                 thread->set_restartable_syscall(number);
         } else {
             frame->rax = result.value();

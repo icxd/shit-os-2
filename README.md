@@ -28,11 +28,11 @@ It is still not useful. It is now genuinely an operating system.
 | **Memory** | Bitmap physical allocator, 4-level paging, W^X kernel image, 4 GiB direct map, MMIO and module windows, slab-backed kernel heap |
 | **Scheduling** | Preemptive round-robin at 250 Hz, per-CPU run queue behind a `gs` accessor, wait queues, sleeping, zombie reaping |
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
-| **Modules** | ELF64 `.ko` loaded at runtime; PS/2 keyboard driver written in C |
-| **Userland** | Ring 3, 33 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals, a TTY with canonical line discipline |
-| **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` `stty` |
-| **Ports** | **Lua 5.4**, unpatched, built against our libc |
-| **Tests** | 176 assertions in the kernel at every boot, a userland suite run from `/etc/rc` before the shell, and host-side checks of the libm and the allocator |
+| **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard and CMOS clock drivers, written in C |
+| **Userland** | Ring 3, 43 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, job control with process groups and sessions, a TTY with canonical line discipline |
+| **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` `stty` `sleep` |
+| **Ports** | **Lua 5.4** and **dash**, both unpatched, built against our libc |
+| **Tests** | 198 assertions in the kernel at every boot, 228 more from ring 3 run by `/etc/rc` before the shell, and host-side checks of the libm and the allocator |
 
 The shell has builtins, `PATH` lookup, pipelines, `<` `>` `>>` redirection and
 quoting. `^C` interrupts the foreground command. A null dereference in a
@@ -177,12 +177,14 @@ not a restructuring.
 exceptions, no RTTI, no sentinel return codes that can be ignored by accident.
 
 **The self tests run on the machine.** An OS has no harness to run under, so
-176 assertions run during boot, covering the physical allocator, the heap, W^X,
+198 assertions run during boot, covering the physical allocator, the heap, W^X,
 interrupt delivery, FPU state across context switches, inode lifetime, all
 three filesystems, and the module loader. Then `init` runs `/etc/rc`, which
-runs the ring 3 suite — the Lua and libc checks, and the file-lifetime
-regressions — before the shell appears. Several real bugs in this repository
-were found by these rather than by inspection.
+runs the ring 3 suite before the shell appears: the POSIX surface, a POSIX
+shell script run by dash, Lua's own checks, and the file-lifetime regressions.
+Most of the real bugs in this repository were found by these rather than by
+inspection, and the ones dash found are written up in
+[the roadmap](docs/roadmap.md).
 
 Two things are better asked on the host than inside QEMU, and are asked of the
 same source that ships: the libm, compared against glibc in ULPs
@@ -193,8 +195,10 @@ emulator.
 
 **Ports are the other test.** Everything in `user/bin` was written against a
 libc that was written for it, which proves nothing. Software nobody here wrote
-is the only honest check, which is why Lua is in the tree and why it is not
-patched.
+is the only honest check, which is why Lua and dash are in the tree and why
+neither is patched. dash in particular is what makes the job control layer
+believable: it was written against Unix in 1997 and does not know or care what
+it is running on.
 
 ## License
 

@@ -21,10 +21,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install the toolchain
+        # gcc as well as clang: the dash port builds five generator programs
+        # that run on this machine rather than on the target.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang lld cmake ninja-build \
+            clang lld cmake ninja-build gcc \
             xorriso qemu-system-x86 \
             grub-common grub-pc-bin grub-efi-amd64-bin
 

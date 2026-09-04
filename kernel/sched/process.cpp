@@ -90,6 +90,14 @@ ErrorOr<Process*> Process::create(char const* name, Process* parent)
     process->m_pgid = parent != nullptr ? parent->m_pgid : process->m_pid;
     process->m_sid = parent != nullptr ? parent->m_sid : process->m_pid;
 
+    // The signal mask and the file creation mask are both inherited across
+    // fork and survive exec, which is what makes "block SIGCHLD, then fork"
+    // mean anything.
+    if (parent != nullptr) {
+        process->m_signal_mask = parent->m_signal_mask;
+        process->m_umask = parent->m_umask;
+    }
+
     // Inherit the parent's working directory, or start at the root. Holding
     // a pointer to it means holding a reference: a directory can be removed
     // while a process is sitting in it.
@@ -373,6 +381,13 @@ ErrorOr<pid_t> Process::reap_child(pid_t wanted, int& status_out, bool blocking,
             return Error::from_errno(EAGAIN);
 
         m_child_exit_queue.wait();
+
+        // A signal has to be able to break this, or ^C cannot interrupt a
+        // shell that is waiting on a job. Callers that should not notice --
+        // an ignored signal, or a stop and continue -- get the call restarted
+        // for them on the way out of the kernel.
+        if (has_pending_signals())
+            return Error::from_errno(EINTR);
     }
 }
 
@@ -543,17 +558,53 @@ void Process::raise_signal(int signal)
         resume();
 }
 
+// Neither can be blocked. A process that could block SIGKILL would be
+// unkillable, and one that could block SIGSTOP could not be suspended.
+static constexpr u64 UNBLOCKABLE_SIGNALS = (1ULL << SIGKILL) | (1ULL << SIGSTOP);
+
+bool Process::has_pending_signals() const
+{
+    u64 const pending = __atomic_load_n(&m_pending_signals, __ATOMIC_ACQUIRE);
+    u64 const blocked = __atomic_load_n(&m_signal_mask, __ATOMIC_ACQUIRE) & ~UNBLOCKABLE_SIGNALS;
+    return (pending & ~blocked) != 0;
+}
+
 int Process::take_pending_signal()
 {
-    u64 pending = __atomic_load_n(&m_pending_signals, __ATOMIC_ACQUIRE);
-    if (pending == 0)
+    u64 const pending = __atomic_load_n(&m_pending_signals, __ATOMIC_ACQUIRE);
+    u64 const blocked = __atomic_load_n(&m_signal_mask, __ATOMIC_ACQUIRE) & ~UNBLOCKABLE_SIGNALS;
+    u64 const deliverable = pending & ~blocked;
+    if (deliverable == 0)
         return 0;
 
-    // Lowest-numbered pending signal first, which is close enough to the
-    // ordering POSIX leaves unspecified.
-    int const signal = __builtin_ctzll(pending);
+    // Lowest-numbered deliverable signal first, which is close enough to the
+    // ordering POSIX leaves unspecified. A blocked one stays pending.
+    int const signal = __builtin_ctzll(deliverable);
     __atomic_and_fetch(&m_pending_signals, ~(1ULL << signal), __ATOMIC_RELEASE);
     return signal;
+}
+
+u64 Process::set_signal_mask(int how, u64 wanted)
+{
+    u64 const previous = __atomic_load_n(&m_signal_mask, __ATOMIC_ACQUIRE);
+    u64 next = previous;
+
+    switch (how) {
+    case SIG_BLOCK: next = previous | wanted; break;
+    case SIG_UNBLOCK: next = previous & ~wanted; break;
+    case SIG_SETMASK: next = wanted; break;
+    default: return previous;
+    }
+
+    __atomic_store_n(&m_signal_mask, next & ~UNBLOCKABLE_SIGNALS, __ATOMIC_RELEASE);
+    return previous;
+}
+
+u32 Process::set_umask(u32 mask)
+{
+    u32 const previous = m_umask;
+    m_umask = mask & 07777;
+    return previous;
 }
 
 void Process::set_signal_action(int signal, void* handler, void* restorer, int flags)

@@ -35,4 +35,14 @@ void* memccpy(void* dest, const void* src, int c, size_t n);
 
 char* strerror(int code);
 
+/*
+ * The GNU extensions that portable software reaches for anyway. Each returns a
+ * pointer to the *end* of what it wrote, which is what makes chaining them
+ * cheaper than a strlen after every step.
+ */
+char* stpcpy(char* destination, const char* source);
+char* stpncpy(char* destination, const char* source, size_t count);
+void* mempcpy(void* destination, const void* source, size_t count);
+char* strchrnul(const char* text, int c);
+
 #endif /* _STRING_H */

@@ -445,7 +445,12 @@ ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* bas
     if (inode->is_directory() && (flags & O_ACCMODE) != O_RDONLY)
         return Error::from_errno(EISDIR);
 
-    if ((flags & O_TRUNC) != 0 && (flags & O_ACCMODE) != O_RDONLY)
+    // O_TRUNC means something only for a regular file. A character device has
+    // no length to shorten, and POSIX leaves the case undefined rather than
+    // making it an error -- which matters, because `2>/dev/null` opens with
+    // O_TRUNC and every script in the world writes it.
+    if ((flags & O_TRUNC) != 0 && (flags & O_ACCMODE) != O_RDONLY
+        && inode->type() == InodeType::Regular)
         TRY(inode->truncate(0));
 
     auto* description = static_cast<FileDescription*>(kmalloc(sizeof(FileDescription)));

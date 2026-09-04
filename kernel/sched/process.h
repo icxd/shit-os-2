@@ -101,6 +101,14 @@ public:
     ErrorOr<bool> descriptor_close_on_exec(int fd) const;
     ErrorOr<void> set_descriptor_close_on_exec(int fd, bool close_on_exec);
 
+    // --- the file creation mask, for umask(2) ---
+    //
+    // Applied to the mode of anything created. Nothing checks mode bits yet,
+    // so this only decides what gets recorded -- but recording the wrong thing
+    // now means every file in the tree is wrong later.
+    u32 umask() const { return m_umask; }
+    u32 set_umask(u32 mask);
+
     // --- the break, for brk(2) ---
     u64 brk() const { return m_brk_current; }
     void set_brk_start(u64 address) { m_brk_start = m_brk_current = address; }
@@ -141,8 +149,17 @@ public:
 
     // Signals. Only what a shell needs: a pending mask and default actions.
     void raise_signal(int signal);
-    bool has_pending_signals() const { return m_pending_signals != 0; }
+
+    // True only for a signal that can actually be delivered. A blocked signal
+    // stays pending and must not wake a blocked read, or a program that
+    // blocked SIGCHLD around its job bookkeeping would see EINTR anyway.
+    bool has_pending_signals() const;
     int take_pending_signal();
+
+    // The blocked set. SIGKILL and SIGSTOP cannot be blocked, and are masked
+    // out of anything a caller asks for rather than being refused.
+    u64 signal_mask() const { return m_signal_mask; }
+    u64 set_signal_mask(int how, u64 wanted);
     void set_signal_action(int signal, void* handler, void* restorer, int flags);
     int signal_flags(int signal) const;
     void* signal_disposition(int signal) const;
@@ -170,6 +187,8 @@ private:
 
     FileDescriptorEntry m_descriptors[MAX_FILE_DESCRIPTORS] {};
 
+    u32 m_umask { 022 };
+
     u64 m_brk_start { 0 };
     u64 m_brk_current { 0 };
 
@@ -192,6 +211,7 @@ private:
     WaitQueue m_child_exit_queue;
 
     u64 m_pending_signals { 0 };
+    u64 m_signal_mask { 0 };
     void* m_signal_handlers[NSIG] {};
     int m_signal_flags[NSIG] {};
     void* m_signal_restorers[NSIG] {};

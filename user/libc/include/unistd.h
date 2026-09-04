@@ -53,6 +53,30 @@ int unlink(const char* path);
 
 int isatty(int fd);
 
+/*
+ * There are no users. All four of these report 0, which is true -- everything
+ * runs as root -- rather than a placeholder.
+ */
+uid_t getuid(void);
+uid_t geteuid(void);
+gid_t getgid(void);
+gid_t getegid(void);
+
+/* One group, and it is root's. Returns 1 and fills in gid 0, or reports the
+ * count when asked for none. */
+int getgroups(int count, gid_t* groups);
+
+/* The file creation mask. Inherited across fork and kept across exec. */
+mode_t umask(mode_t mask);
+
+long sysconf(int name);
+#define _SC_OPEN_MAX 4
+#define _SC_PAGESIZE 30
+#define _SC_PAGE_SIZE 30
+#define _SC_CLK_TCK 2
+#define _SC_NPROCESSORS_ONLN 84
+#define _SC_ARG_MAX 0
+
 /* There is no permission model yet, so access() answers "does it exist and is
  * it the right kind of thing", which is what every caller here wants. */
 #define F_OK 0

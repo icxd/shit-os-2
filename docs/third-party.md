@@ -39,6 +39,32 @@ libc, not about the program.
 The first build needs network access; after that the tarball is cached in
 `.port-cache/`. `cmake -B build -DSHITOS_PORTS=OFF` skips ports entirely.
 
+## dash (a port, not vendored)
+
+`ports/dash/` builds dash 0.5.12 against our libc, the same way: downloaded,
+checksummed, never in this tree.
+
+dash is here because our own `sh` was written against this kernel and so proves
+nothing about it. dash was written against Unix in 1997 and does not know or
+care what it is running on -- so if process groups, terminal ownership and stop
+signals work for dash, they work.
+
+Nothing is patched. What would normally be autoconf's output is
+`ports/dash/config.h`, written by hand: cross-compiling autoconf means running
+its probes and then overriding half of them, and every answer is one we already
+know. Each `HAVE_` in that file is a claim about our libc, and each absence is a
+real gap.
+
+Getting it running needed a dozen additions to the libc -- signal sets and
+`sigprocmask`, `umask`, the user database such as it is, `wait3`, `sysconf`,
+`times`, four GNU string functions -- and no changes to dash.
+
+dash is distributed under a three-clause BSD licence, with the `printf` builtin
+under the same.
+
+- Upstream: <http://gondor.apana.org.au/~herbert/dash/>
+- Licence: in `COPYING` in the tarball the port downloads
+
 ## Specifications implemented, not copied
 
 For completeness, since these shape the code without contributing any:

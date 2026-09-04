@@ -11,7 +11,9 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/times.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -226,11 +228,47 @@ int munmap(void* address, size_t length)
 
 int nanosleep(const struct timespec* request, struct timespec* remaining)
 {
-    (void)remaining;
-    if (request == 0)
+    if (request == 0 || request->tv_nsec < 0 || request->tv_nsec >= 1000000000L) {
+        errno = EINVAL;
         return -1;
-    return (int)__syscall_return(
-        __syscall2(SYS_nanosleep, (long)request->tv_sec, request->tv_nsec));
+    }
+
+    /*
+     * The kernel does not report how much of the sleep was left, and it does
+     * not need to: the monotonic clock says. Taking the deadline before the
+     * call and subtracting after is exact to the tick, which is as good as the
+     * sleep itself.
+     */
+    struct timespec started;
+    int const have_clock = clock_gettime(CLOCK_MONOTONIC, &started) == 0;
+
+    int const result
+        = (int)__syscall_return(__syscall2(SYS_nanosleep, (long)request->tv_sec, request->tv_nsec));
+
+    if (result == 0 || !remaining)
+        return result;
+
+    /* Interrupted. Work out what is left so a caller can go back to sleep for
+     * the rest rather than starting over. */
+    remaining->tv_sec = 0;
+    remaining->tv_nsec = 0;
+    if (!have_clock)
+        return result;
+
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return result;
+
+    long long const asked = (long long)request->tv_sec * 1000000000LL + request->tv_nsec;
+    long long const slept
+        = ((long long)now.tv_sec - started.tv_sec) * 1000000000LL + (now.tv_nsec - started.tv_nsec);
+    long long left = asked - slept;
+    if (left < 0)
+        left = 0;
+
+    remaining->tv_sec = (time_t)(left / 1000000000LL);
+    remaining->tv_nsec = (long)(left % 1000000000LL);
+    return result;
 }
 
 unsigned int sleep(unsigned int seconds)
@@ -286,16 +324,29 @@ int sigaction(int number, const struct sigaction* action, struct sigaction* old)
     if (action != 0) {
         copy = *action;
         /*
-         * The kernel needs somewhere for the handler to return to. libc owns
-         * that trampoline, so fill it in here rather than making every caller
-         * know it exists.
+         * The kernel needs somewhere for the handler to return to, and libc
+         * owns that trampoline. Overwrite whatever the caller had there,
+         * always -- sa_restorer is not a field a portable program sets, so a
+         * value in it is stack garbage from a struct that was filled in field
+         * by field rather than zeroed. Honouring it means returning from the
+         * handler to a random address.
+         *
+         * dash does exactly that, and the crash it caused was three calls
+         * later and looked like a corrupt heap.
          */
-        if (copy.sa_restorer == 0)
-            copy.sa_restorer = __libc_sigreturn_trampoline;
+        copy.sa_restorer = __libc_sigreturn_trampoline;
         to_install = &copy;
     }
 
-    return (int)__syscall_return(__syscall3(SYS_sigaction, number, (long)to_install, (long)old));
+    int const result
+        = (int)__syscall_return(__syscall3(SYS_sigaction, number, (long)to_install, (long)old));
+
+    /* The trampoline is ours, not the caller's business, and handing it back
+     * invites it being passed to a later sigaction as if it meant something. */
+    if (old != 0)
+        old->sa_restorer = 0;
+
+    return result;
 }
 
 sighandler_t signal(int number, sighandler_t handler)
@@ -395,4 +446,95 @@ int killpg(pid_t pgid, int signal)
     }
     /* kill() reads a negative pid as a group; 0 already means "my group". */
     return kill(pgid == 0 ? 0 : -pgid, signal);
+}
+
+/* --- users, such as they are --------------------------------------------
+ *
+ * There are none. Everything runs as root and no mode bit is ever checked, so
+ * these report 0 because that is what is true, not as a placeholder.
+ */
+
+uid_t getuid(void)
+{
+    return 0;
+}
+uid_t geteuid(void)
+{
+    return 0;
+}
+gid_t getgid(void)
+{
+    return 0;
+}
+gid_t getegid(void)
+{
+    return 0;
+}
+
+mode_t umask(mode_t mask)
+{
+    return (mode_t)__syscall_return(__syscall1(SYS_umask, mask));
+}
+
+long sysconf(int name)
+{
+    switch (name) {
+    case _SC_OPEN_MAX: return 64; /* MAX_FILE_DESCRIPTORS in the kernel */
+    case _SC_PAGESIZE: return 4096;
+    case _SC_CLK_TCK: return 250; /* the PIT runs at 250 Hz */
+    case _SC_NPROCESSORS_ONLN: return 1;
+    case _SC_ARG_MAX: return 4096; /* MAX_ARGUMENT_BYTES */
+    default: errno = EINVAL; return -1;
+    }
+}
+
+clock_t times(struct tms* out)
+{
+    if (out) {
+        /* No per-process CPU accounting exists, so reporting zero is the
+         * honest answer rather than a plausible invented one. */
+        out->tms_utime = 0;
+        out->tms_stime = 0;
+        out->tms_cutime = 0;
+        out->tms_cstime = 0;
+    }
+
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return (clock_t)-1;
+    /* In ticks, as sysconf(_SC_CLK_TCK) reports them. */
+    return (clock_t)(now.tv_sec * 250 + now.tv_nsec / 4000000);
+}
+
+int lstat(const char* path, struct stat* out)
+{
+    /* No symbolic links exist, so there is nothing for lstat to decline to
+     * follow. When they arrive, this stops being a forward. */
+    return stat(path, out);
+}
+
+pid_t wait4(pid_t pid, int* status, int options, struct rusage* usage)
+{
+    if (usage)
+        memset(usage, 0, sizeof(*usage));
+    return waitpid(pid, status, options);
+}
+
+pid_t wait3(int* status, int options, struct rusage* usage)
+{
+    return wait4(-1, status, options, usage);
+}
+
+int getgroups(int count, gid_t* groups)
+{
+    /* Everything runs as root, which is in exactly one group. Asking for zero
+     * is how a caller sizes its array first. */
+    if (count == 0)
+        return 1;
+    if (count < 1 || !groups) {
+        errno = EINVAL;
+        return -1;
+    }
+    groups[0] = 0;
+    return 1;
 }

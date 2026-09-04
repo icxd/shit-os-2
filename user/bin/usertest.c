@@ -476,6 +476,100 @@ static void test_sessions(void)
         "setsid is refused for a group leader and allowed for anyone else");
 }
 
+/* --- catching signals and coming back ------------------------------------
+ *
+ * Everything else here checks that a signal *arrives*. This checks that the
+ * program is still standing afterwards: the handler runs, sigreturn puts the
+ * interrupted context back, and the code that was running carries on with its
+ * registers and its stack intact. Nothing tested that until dash caught a
+ * SIGTERM and died in the next call it made.
+ */
+
+static volatile int s_handler_ran;
+static volatile int s_handler_signal;
+
+static void note_signal(int signal)
+{
+    s_handler_ran = 1;
+    s_handler_signal = signal;
+}
+
+static void test_signal_return(void)
+{
+    struct sigaction action;
+    struct sigaction previous;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = note_signal;
+    action.sa_flags = SA_RESTART;
+    check_errno(sigaction(SIGTERM, &action, &previous) == 0, "installing a SIGTERM handler");
+
+    /* Values in callee-saved registers and on the stack, so that a handler
+     * that clobbers them shows up here rather than three calls later. */
+    volatile long guard = 0x0123456789ABCDEFL;
+    char scratch[64];
+    memset(scratch, 0x5A, sizeof(scratch));
+
+    s_handler_ran = 0;
+    check(raise(SIGTERM) == 0, "raising it at ourselves");
+    check(s_handler_ran == 1, "the handler ran");
+    check(s_handler_signal == SIGTERM, "with the right signal number");
+    check(guard == 0x0123456789ABCDEFL, "and left our locals alone");
+    check(scratch[0] == 0x5A && scratch[63] == 0x5A, "and our stack alone");
+
+    /* The allocator is the first thing to notice a wrecked context, because
+     * it is what the next call usually reaches for. */
+    char* const allocated = malloc(128);
+    check(allocated != NULL, "malloc still works after a handler returned");
+    if (allocated) {
+        memset(allocated, 'x', 128);
+        free(allocated);
+    }
+
+    char* const copied = strdup("after the handler");
+    check(copied != NULL && strcmp(copied, "after the handler") == 0,
+        "and so does strdup, which is where dash died");
+    free(copied);
+
+    /* Twice, because a handler that half-restores may only show on the
+     * second pass through. */
+    s_handler_ran = 0;
+    raise(SIGTERM);
+    check(s_handler_ran == 1, "a second signal is caught too");
+    check(guard == 0x0123456789ABCDEFL, "locals survive the second one");
+
+    /*
+     * The bug this test exists for. sa_restorer is a libc-internal field, so a
+     * program that fills a struct sigaction in field by field -- as dash does,
+     * and as most software does -- leaves stack garbage in it. If the libc
+     * honours that instead of overwriting it, the handler returns to a random
+     * address and the program dies somewhere unrelated.
+     */
+    struct sigaction dirty;
+    memset(&dirty, 0xAB, sizeof(dirty));
+    dirty.sa_handler = note_signal;
+    dirty.sa_mask = 0;
+    dirty.sa_flags = 0;
+    check_errno(sigaction(SIGTERM, &dirty, NULL) == 0, "installing from an unzeroed struct");
+
+    s_handler_ran = 0;
+    raise(SIGTERM);
+    check(s_handler_ran == 1, "the handler still ran");
+    check(guard == 0x0123456789ABCDEFL, "and returning did not wreck the caller");
+
+    char* const after_dirty = strdup("still here");
+    check(after_dirty != NULL && strcmp(after_dirty, "still here") == 0,
+        "a garbage sa_restorer is overwritten rather than honoured");
+    free(after_dirty);
+
+    /* And what comes back in `old` must not be the libc's own trampoline: a
+     * caller that saves and restores a disposition would pass it back in. */
+    struct sigaction saved;
+    sigaction(SIGTERM, NULL, &saved);
+    check(saved.sa_restorer == NULL, "sigaction does not hand back the internal restorer");
+
+    sigaction(SIGTERM, &previous, NULL);
+}
+
 /* --- poll and select ---------------------------------------------------- */
 
 static void test_poll(void)
@@ -602,6 +696,7 @@ int main(int argc, char** argv, char** envp)
     test_background_read();
     test_terminal_ownership();
     test_sessions();
+    test_signal_return();
     test_poll();
     test_select();
 

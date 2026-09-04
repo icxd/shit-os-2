@@ -13,6 +13,7 @@ add_shitos_program(ps SOURCES ps.c)
 add_shitos_program(free SOURCES free.c)
 add_shitos_program(lsmod SOURCES lsmod.c)
 add_shitos_program(uname SOURCES uname.c)
+add_shitos_program(sleep SOURCES sleep.c)
 add_shitos_program(stty SOURCES stty.c)
 
 # Not a utility: the POSIX surface checked from ring 3, run at boot by /etc/rc.

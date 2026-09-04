@@ -58,7 +58,7 @@ the top bit set.
 | 26 | `kill` | `(pid_t pid, int signal)` | Signal 0 is the existence check. A negative pid addresses a process group; `-1` is everything but init. |
 | 27 | `sigaction` | `(int sig, const struct sigaction*, struct sigaction*)` | libc fills in `sa_restorer`. |
 | 28 | `sigreturn` | `()` | Called by the libc restorer, never directly. |
-| 29 | `nanosleep` | `(time_t sec, long nsec)` | Rounded to the 4 ms tick. |
+| 29 | `nanosleep` | `(time_t sec, long nsec)` | Rounded to the 4 ms tick. Interruptible, and never restarted -- POSIX says so, and restarting would sleep longer than asked. |
 | 30 | `uname` | `(struct utsname*)` | |
 | 31 | `sched_yield` | `()` | |
 | 32 | `isatty` | `(int fd)` | |
@@ -70,6 +70,8 @@ the top bit set.
 | 38 | `setsid` | `()` | `EPERM` for a group leader. |
 | 39 | `getsid` | `(pid_t pid)` | |
 | 40 | `poll` | `(struct pollfd*, nfds_t, int timeout_ms)` | `POLLIN`/`POLLOUT`/`POLLHUP`/`POLLNVAL`. `select` is a libc translation onto it. |
+| 41 | `sigprocmask` | `(int how, const sigset_t*, sigset_t*)` | `SIGKILL` and `SIGSTOP` cannot be blocked. Inherited across fork and exec. |
+| 42 | `umask` | `(mode_t mask)` | Returns the previous mask. |
 
 ## Extensions
 
@@ -92,8 +94,12 @@ A `/proc` filesystem should replace the first three; see
 Deliberately absent rather than stubbed, so a caller finds out at build time
 rather than by getting a plausible wrong answer:
 
-- Users and permissions. Everything runs as uid 0 and mode bits are recorded
-  but never checked.
+- Users and permissions. Everything runs as uid 0 and mode bits are recorded --
+  `umask` is applied at creation -- but never checked. `getuid` and friends live
+  in the libc and answer 0, because that is true rather than a placeholder.
+- `sigpending`, and `sigsuspend` as a syscall. The libc has a sigsuspend that
+  polls; see the comment on it for why that is race-free and a real one would
+  be better.
 - `readlink`, `symlink`, `link`, `chmod`, `chown`.
 - `settimeofday` and `clock_settime`. The clock is read once at boot from
   whatever driver offers one and never written.

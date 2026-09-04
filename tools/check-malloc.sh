@@ -56,6 +56,10 @@ size_t shitos_strlen(const char* s) { return strlen(s); }
 int shitos_strcmp(const char* a, const char* b) { return strcmp(a, b); }
 int shitos_strncmp(const char* a, const char* b, size_t n) { return strncmp(a, b, n); }
 void shitos__exit(int status) { exit(status); }
+long shitos_write(int fd, const void* buffer, unsigned long count)
+{
+    return (long)fwrite(buffer, 1, count, fd == 2 ? stderr : stdout);
+}
 long shitos___syscall_return(long value) { return value; }
 STUBS
 

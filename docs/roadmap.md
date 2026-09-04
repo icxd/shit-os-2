@@ -20,6 +20,13 @@ What exists, what is next, and what is deliberately not being done yet.
 - Reference-counted inodes: unlinking a file that is still open no longer
   frees it, so `tmpfile()` works and an open handle cannot read another
   file's bytes.
+- A CMOS real-time clock, as the second loadable module and the first user of
+  driver ABI v2. `clock_gettime`, `gettimeofday`, real file timestamps.
+- `fcntl`, `rename(2)`, `poll`, `select`, `sigprocmask`, `umask`.
+- **Job control**: process groups, sessions, `tcsetpgrp`, stop signals, a
+  terminal that changes hands, and `jobs`/`fg`/`bg`/`&` in the shell.
+- **dash runs**, unpatched, from `ports/dash` -- which is what makes the job
+  control layer believable, since dash did not have this kernel in mind.
 - **Lua 5.4 runs**, unpatched, from `ports/lua`. 68 of its own checks pass,
   including the floating point, string formatting, file I/O, garbage
   collection and error-unwinding paths.
@@ -34,14 +41,6 @@ What exists, what is next, and what is deliberately not being done yet.
 ## Next
 
 Roughly in the order that each one unblocks the most.
-
-**A CMOS real-time clock.** `time()` currently reports seconds since boot,
-because there is no clock to ask. That makes every timestamp and every date a
-script prints wrong. The driver is small, and it would be the second loadable
-module -- useful in itself, since one driver is not much evidence that the
-module ABI generalises.
-
-**rename(2).** There is no syscall for it, so `os.rename` fails with ENOSYS.
 
 **Copy-on-write fork.** `fork` currently copies every page eagerly, which is
 pure waste in the fork-then-exec case a shell spends all its time in. The page
@@ -68,10 +67,36 @@ one is never dropped from memory while its name exists. That is fine for
 RAM-backed filesystems, where the inode *is* the file, and not fine the moment
 a disk is involved and the tree is larger than RAM.
 
-**Job control.** Process groups, sessions and `tcsetpgrp`, so `^C` goes to a
-foreground *group* rather than to whichever process last read the terminal.
+**Users, and a real `/etc/passwd`.** Everything runs as uid 0, `getpwnam`
+answers for one hardcoded account, and no mode bit is ever checked. `umask` is
+applied at creation, which is the half that matters for getting the recorded
+modes right before there is anything to check them against.
+
+**A wait queue per inode, so `poll` can sleep on the right thing.** It polls
+the timer today, which is honest and wasteful.
+
+**`sigsuspend` and `sigpending` as syscalls.** The libc `sigsuspend` polls,
+because there is no call that swaps the mask and waits atomically. It is
+race-free -- see the comment on it -- but a real one would not need a comment.
 
 ## Fixed, and worth remembering
+
+**A signal handler that returned to a random address.** `sa_restorer` is a
+libc-internal field, so a program that fills a `struct sigaction` in field by
+field -- as dash does, and as most software does -- leaves stack garbage in it.
+Our libc only supplied its own trampoline when that field was zero, so dash's
+first caught SIGTERM returned into the middle of `strdup` and died there. It
+looked exactly like a corrupt heap, which is where two hours went. The libc now
+overwrites the field unconditionally, which is what glibc does and why nobody
+else hits this.
+
+**A `sigsuspend` that waited for a signal already delivered.** The first
+version looped until `nanosleep` reported EINTR. Unblocking the mask is itself
+a syscall, so a pending signal is delivered on the way out of *that* call --
+before the sleep starts -- and the loop then waited forever for a second one.
+dash hung in `wait` perhaps half the time. It now waits briefly and returns
+unconditionally, which every correct caller of sigsuspend already copes with,
+because every one of them is a loop around a condition it re-tests.
 
 **The unlink-while-open use-after-free.** `TmpfsInode::unlink` used to destroy
 the inode immediately, so a process that still had the file open was left with

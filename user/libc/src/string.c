@@ -302,3 +302,44 @@ char* strtok(char* s, const char* delimiters)
     }
     return s;
 }
+
+/* --- the GNU extensions -------------------------------------------------
+ *
+ * Each returns a pointer to the end of what it wrote rather than the start.
+ * That is the whole reason they exist: building a string out of pieces with
+ * strcpy costs a strlen per piece, and with these it costs nothing.
+ */
+
+char* stpcpy(char* destination, const char* source)
+{
+    while ((*destination = *source++) != '\0')
+        ++destination;
+    return destination;
+}
+
+char* stpncpy(char* destination, const char* source, size_t count)
+{
+    size_t i = 0;
+    for (; i < count && source[i] != '\0'; ++i)
+        destination[i] = source[i];
+    char* const end = destination + i;
+    /* strncpy pads the remainder with NULs, and so does this. */
+    for (; i < count; ++i)
+        destination[i] = '\0';
+    return end;
+}
+
+void* mempcpy(void* destination, const void* source, size_t count)
+{
+    return (char*)memcpy(destination, source, count) + count;
+}
+
+char* strchrnul(const char* text, int c)
+{
+    const char wanted = (char)c;
+    while (*text && *text != wanted)
+        ++text;
+    /* The point of the "nul": a miss returns the terminator's address rather
+     * than NULL, so the caller can use the result without a branch. */
+    return (char*)text;
+}

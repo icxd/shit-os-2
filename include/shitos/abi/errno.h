@@ -21,6 +21,8 @@
 #define EBADF 9
 #define ECHILD 10
 #define EAGAIN 11
+/* The same errno under the name half the world uses for it. */
+#define EWOULDBLOCK EAGAIN
 #define ENOMEM 12
 #define EACCES 13
 #define EFAULT 14

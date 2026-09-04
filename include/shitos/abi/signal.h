@@ -30,6 +30,11 @@
 #define SIGWINCH 28
 #define NSIG 32
 
+/* sigprocmask(2) */
+#define SIG_BLOCK 0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+
 #define SIG_DFL ((void*)0)
 #define SIG_IGN ((void*)1)
 #define SIG_ERR ((void*)-1)

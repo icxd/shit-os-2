@@ -18,6 +18,7 @@
 #include "internal.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -29,10 +30,20 @@
 #define BIN_COUNT 16
 #define SMALLEST_BIN_SHIFT 4
 
+/*
+ * Every block carries a magic word. The header is 8 + 8 + 8 + 4 bytes and
+ * rounds up to 32 either way, so the check is free -- and it turns "the
+ * allocator returned a wild pointer, and the program died somewhere else with
+ * no explanation" into a message naming the block. That is not hypothetical:
+ * it is how the corruption behind dash's crash was found.
+ */
+#define BLOCK_MAGIC 0x5AFEA110u
+
 typedef struct Block {
     size_t size; /* payload bytes, not counting this header */
     struct Block* next; /* address order */
     struct Block* prev; /* address order */
+    unsigned magic;
     int is_free;
 } Block;
 
@@ -49,6 +60,37 @@ typedef struct FreeLinks {
 static Block* s_heap;
 static Block* s_heap_tail;
 static Block* s_bins[BIN_COUNT];
+
+/* Reports a corrupt heap and stops, because carrying on means writing through
+ * whatever the corrupt metadata pointed at. Writes directly rather than
+ * through stdio: the corruption may be stdio's own buffer. */
+static void heap_corrupt(const char* what, const void* block)
+{
+    static const char prefix[] = "libc: heap corruption: ";
+    write(2, prefix, sizeof(prefix) - 1);
+    write(2, what, strlen(what));
+
+    char address[24];
+    size_t position = sizeof(address);
+    unsigned long value = (unsigned long)block;
+    address[--position] = '\n';
+    do {
+        address[--position] = "0123456789abcdef"[value & 0xf];
+        value >>= 4;
+    } while (value != 0 && position > 3);
+    address[--position] = 'x';
+    address[--position] = '0';
+    address[--position] = ' ';
+    write(2, address + position, sizeof(address) - position);
+
+    _exit(127);
+}
+
+static void check_block(const Block* block, const char* what)
+{
+    if (block->magic != BLOCK_MAGIC)
+        heap_corrupt(what, block);
+}
 
 static size_t align_up(size_t value)
 {
@@ -133,6 +175,7 @@ static Block* extend_heap(size_t payload)
     block->size = total - header_size();
     block->next = 0;
     block->prev = s_heap_tail;
+    block->magic = BLOCK_MAGIC;
     block->is_free = 1;
 
     if (s_heap_tail)
@@ -184,6 +227,7 @@ static void split(Block* block, size_t wanted)
 
     Block* rest = (Block*)((char*)block + header + wanted);
     rest->size = block->size - wanted - header;
+    rest->magic = BLOCK_MAGIC;
     rest->is_free = 1;
     rest->next = block->next;
     rest->prev = block;
@@ -211,6 +255,7 @@ static Block* take_free_block(size_t wanted)
     unsigned const start = bin_index(wanted);
 
     for (Block* block = s_bins[start]; block; block = links_of(block)->next) {
+        check_block(block, "free list entry");
         if (block->size >= wanted) {
             bin_remove(block);
             return block;
@@ -219,6 +264,7 @@ static Block* take_free_block(size_t wanted)
 
     for (unsigned index = start + 1; index < BIN_COUNT; ++index) {
         for (Block* block = s_bins[index]; block; block = links_of(block)->next) {
+            check_block(block, "free list entry");
             if (block->size >= wanted) {
                 bin_remove(block);
                 return block;
@@ -262,6 +308,9 @@ void free(void* pointer)
         return;
 
     Block* block = (Block*)((char*)pointer - header_size());
+    check_block(block, "free");
+    if (block->is_free)
+        heap_corrupt("double free", block);
     block->is_free = 1;
 
     /* Merge with the block after, then the block before. Two O(1) checks,
@@ -308,6 +357,7 @@ void* realloc(void* pointer, size_t size)
     }
 
     Block* block = (Block*)((char*)pointer - header_size());
+    check_block(block, "realloc");
     size_t const wanted = align_up(size);
 
     if (block->size >= wanted) {
@@ -531,4 +581,41 @@ int system(const char* command)
 long labs(long value)
 {
     return value < 0 ? -value : value;
+}
+
+/*
+ * long long is long on x86-64, so these are the same conversion under a
+ * different name. Spelling that out beats a second parser that could drift.
+ */
+long long strtoll(const char* s, char** end, int base)
+{
+    return strtol(s, end, base);
+}
+
+unsigned long long strtoull(const char* s, char** end, int base)
+{
+    return strtoul(s, end, base);
+}
+
+intmax_t strtoimax(const char* s, char** end, int base)
+{
+    return strtol(s, end, base);
+}
+
+uintmax_t strtoumax(const char* s, char** end, int base)
+{
+    return strtoul(s, end, base);
+}
+
+intmax_t imaxabs(intmax_t value)
+{
+    return value < 0 ? -value : value;
+}
+
+imaxdiv_t imaxdiv(intmax_t numerator, intmax_t denominator)
+{
+    imaxdiv_t result;
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
 }
