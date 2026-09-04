@@ -35,21 +35,31 @@ Anything that only shows from ring 3 goes in `rootfs/tests`, which `/etc/rc`
 runs before the interactive shell comes up. A syscall regression belongs there
 rather than in the kernel's own tests.
 
-Two things are asked on the host instead, of the same source that ships. The
-libm, because the boot-time tests have nothing to compare numerical results
-against; and the allocator, because heap corruption surfaces long after the
-call that caused it, and timing an allocator inside QEMU measures QEMU:
+Three things are asked on the host instead, of the same source that ships,
+because each needs something the boot-time tests do not have. The libm and the
+regex engine need a mature implementation to disagree with, and glibc is right
+there. The allocator needs honest timing, and timing an allocator inside QEMU
+measures QEMU -- besides which heap corruption surfaces long after the call
+that caused it.
 
 ```sh
 ./tools/check-libm.sh
 ./tools/check-malloc.sh
+./tools/check-regex.sh
 ```
+
+Each builds our source for the host with its symbols prefixed, so ours and
+glibc's can be linked into one program and asked the same question.
 
 And the real test of the C library is software nobody here wrote:
 
 ```sh
 lua /usr/share/lua/selftest.lua      # inside the OS
+dash /tests/coreutils.sh             # 94 sbase programs
 ```
+
+A port that needs patching is a bug report about our libc, not about the
+program. That has held for all three so far, and it is the rule.
 
 To see the framebuffer rather than the serial log:
 

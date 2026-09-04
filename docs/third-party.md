@@ -65,8 +65,49 @@ under the same.
 - Upstream: <http://gondor.apana.org.au/~herbert/dash/>
 - Licence: in `COPYING` in the tarball the port downloads
 
+## sbase (a port, not vendored)
+
+`ports/sbase/` builds suckless's coreutils -- ninety-odd small programs, one
+per corner of POSIX -- against our libc. Same rule as the others: nothing in
+this tree, fetched and verified at build time.
+
+The verification differs because suckless publishes no tarballs and no
+snapshots, only a git repository. The port clones at a pinned commit and then
+hashes `git archive` of that checkout, which is deterministic, and compares it
+to a recorded SHA-256. A commit id already commits to its contents; the archive
+hash is the same guarantee the tarball ports get from a published checksum,
+arrived at differently.
+
+Nothing is patched. Ninety-four programs build; four do not, and each absence
+is a facility we do not have rather than a disagreement with sbase:
+
+| Skipped | Because |
+|---|---|
+| `cron` | Wants a daemon, a writable `/var`, and something to run it under. |
+| `getconf` | Generated from a header sbase's configure step produces, enumerating limits we do not all have. |
+| `logger` | Wants syslog's facility and priority tables, which describe a daemon that does not exist here. |
+| `tftp` | Wants sockets. There is no network stack. |
+
+Getting the rest to build and run is what most of the libc work in this cycle
+was: the small POSIX headers, `getline`, `popen`, `fmemopen`, the `at` family
+of syscalls, and a POSIX regex engine, because `util.h` includes `<regex.h>`
+and so every one of the ninety-four does.
+
+It found six real bugs, listed in [the roadmap](roadmap.md). One of them --
+`printf` silently ignoring `%j` and then applying the next conversion to the
+wrong argument -- had been in the libc since the beginning and nothing had
+noticed.
+
+sbase is distributed under the MIT licence.
+
+- Upstream: <https://core.suckless.org/sbase/>
+- Licence: `LICENSE` in the checkout the port makes
+
 ## Specifications implemented, not copied
 
 For completeness, since these shape the code without contributing any:
 multiboot2, the System V x86-64 ABI and ELF64, the Intel and AMD manuals,
-POSIX.1, and the ustar format from POSIX.1-1988.
+POSIX.1 -- including its regular expression grammar, which
+`user/libc/src/regex.c` implements from the specification and checks against
+glibc rather than reading anyone's code -- and the ustar format from
+POSIX.1-1988.

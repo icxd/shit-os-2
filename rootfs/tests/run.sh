@@ -7,6 +7,8 @@ echo "--- posix surface"
 usertest
 echo "--- posix shell (dash)"
 dash /tests/shell.sh
+echo "--- coreutils (sbase)"
+dash /tests/coreutils.sh
 echo "--- lua and libc"
 lua /usr/share/lua/selftest.lua
 echo "--- file lifetime"

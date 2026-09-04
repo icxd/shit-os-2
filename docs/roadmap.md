@@ -12,10 +12,10 @@ What exists, what is next, and what is deliberately not being done yet.
 - Per-CPU state, PIT, preemptive round-robin scheduling, wait queues.
 - VFS with a ustar initrd, tmpfs and devfs.
 - Runtime-loadable driver modules against a versioned ABI. PS/2 keyboard.
-- Ring 3: syscall gate, 33 POSIX calls, static ELF loading with correct auxv,
+- Ring 3: syscall gate, 50 POSIX calls, static ELF loading with correct auxv,
   fork/execve/waitpid, pipes, signals with real handler delivery, a TTY with
   canonical line discipline.
-- A C library and twelve userland programs, reaching an interactive shell.
+- A C library, reaching an interactive shell.
 - FPU and SSE state preserved across context switches.
 - Reference-counted inodes: unlinking a file that is still open no longer
   frees it, so `tmpfile()` works and an open handle cannot read another
@@ -34,9 +34,15 @@ What exists, what is next, and what is deliberately not being done yet.
   walked every block on every call, and Lua building and collecting 20000
   small tables took 41 seconds. Now 41 ns per malloc/free pair on the host,
   and the whole boot-plus-test sequence finishes in about a second.
-- 176 kernel self-test assertions at every boot, a userland suite run from
-  `/etc/rc` before the shell, and two host-side checks -- libm accuracy
-  against glibc, and the allocator.
+- **sbase runs**: ninety-four of suckless's coreutils, unpatched, from
+  `ports/sbase`. `grep`, `sed`, `find`, `sort`, `du`, `xargs`, `tar` and the
+  rest of the set a shell script actually reaches for.
+- A **POSIX regular expression engine** in the libc, written from the
+  specification. sbase's `util.h` includes `<regex.h>`, so every one of those
+  ninety-four programs needed it. Checked against glibc over 6498 cases.
+- 198 kernel self-test assertions at every boot, 309 more from ring 3 run by
+  `/etc/rc` before the shell, and three host-side differential checks against
+  glibc -- libm accuracy in ULPs, the allocator, and the regex engine.
 
 ## Next
 
@@ -129,9 +135,42 @@ lists through their own payloads, so the header did not have to grow.
 `tools/check-malloc.sh` builds the shipped `stdlib.c` for the host and fails if
 throughput goes back to linear.
 
+**Six bugs the coreutils found.** Every one of them was reachable before and
+nothing had reached it. That is the argument for porting software you did not
+write: Lua exercises arithmetic, dash exercises signals, and ninety-four small
+programs exercise the parts nobody thought to test.
+
+- `printf` silently ignored `%j`, `%t` and `%L`. Not "printed them wrong" --
+  the length modifier was not recognised, so the loop never consumed it, the
+  conversion character after it was never seen, and no argument was taken for
+  it. Everything after that point in the format string read the wrong
+  argument. `du`'s `"%jd\t%s\n"` therefore handed a block *count* to `%s`,
+  and it segfaulted dereferencing `0x1`. This had been in the libc since the
+  first day it could print.
+- `fmemopen` left the stream's descriptor at 0 rather than -1, so the first
+  refill called `read(0)`. `grep`, `sed` and everything else that reads a
+  buffer as a file failed with `EBADF`.
+- `getcwd` failed anywhere under a mount point. Rebuilding the path walks
+  parent pointers, and a mount root has no parent -- the walk stopped there
+  instead of stepping across to the directory the filesystem is mounted on.
+- The `at` family was a libc fiction that only handled `AT_FDCWD`. Anything
+  recursive -- `du`, `rm -r`, `cp -r` -- descends by opening each directory and
+  resolving against *that*, so all of it was broken. Now five real syscalls.
+- `ARG_MAX` was 4096. `xargs` reserves exactly 4096 bytes for the environment
+  before deciding how much room is left for arguments, which left none.
+- `tsearch` returned the tree slot rather than the node. `du` writes through
+  the result to replace its key, so it was corrupting the tree.
+
+One thing that looked like a seventh was not: sbase's `rev` prints its input
+unreversed. Compiling its loop on the host against glibc does the same, so it
+is upstream's bug, not ours. `rootfs/tests/coreutils.sh` says so where the
+check would have gone.
+
 ## Later
 
-- `select`/`poll`, and non-blocking I/O that means something.
+- Non-blocking I/O that means something. `poll` and `select` exist and are
+  honest about pipes and terminals, but `O_NONBLOCK` can only be *set*: no
+  `read` or `write` path consults it, so a reader still blocks.
 - Users, permissions, and mode bits that are actually checked.
 - A second architecture. The `arch/` boundary exists for it; aarch64 on QEMU
   `virt` is the obvious candidate, and would prove the boundary is honest.

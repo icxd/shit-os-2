@@ -29,10 +29,11 @@ It is still not useful. It is now genuinely an operating system.
 | **Scheduling** | Preemptive round-robin at 250 Hz, per-CPU run queue behind a `gs` accessor, wait queues, sleeping, zombie reaping |
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
 | **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard and CMOS clock drivers, written in C |
-| **Userland** | Ring 3, 43 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, job control with process groups and sessions, a TTY with canonical line discipline |
-| **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` `stty` `sleep` `date` |
-| **Ports** | **Lua 5.4** and **dash**, both unpatched, built against our libc |
-| **Tests** | 198 assertions in the kernel at every boot, 228 more from ring 3 run by `/etc/rc` before the shell, and host-side checks of the libm and the allocator |
+| **Userland** | Ring 3, 50 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, the `at` family, job control with process groups and sessions, a TTY with canonical line discipline |
+| **libc** | Our own: stdio, an allocator that is not linear in the heap, a libm checked in ULPs, and a POSIX regex engine |
+| **Programs** | 103 in `/bin`. Ours are `init` `sh` `ps` `free` `lsmod` `stty`; the coreutils come from sbase |
+| **Ports** | **Lua 5.4**, **dash** and **sbase**, all unpatched, built against our libc |
+| **Tests** | 198 assertions in the kernel at every boot, 309 more from ring 3 run by `/etc/rc` before the shell, and three host-side differential checks against glibc |
 
 The shell has builtins, `PATH` lookup, pipelines, `<` `>` `>>` redirection and
 quoting. `^C` interrupts the foreground command. A null dereference in a
@@ -73,6 +74,44 @@ switch*.
 The source is not vendored. `ports/lua/build.sh` downloads the official
 tarball, verifies its SHA-256 and builds it; `cmake -B build -DSHITOS_PORTS=OFF`
 skips it if you would rather not have the network involved.
+
+## It runs the coreutils
+
+`ports/sbase/` builds **94 of suckless's coreutils**, unpatched, against our
+libc. Ninety-four small programs is ninety-four different corners of POSIX, and
+that is exactly why they are here.
+
+```
+/ $ ls /bin | wc -l
+103
+/ $ printf 'pear\napple\npear\nfig\n' | sort | uniq -c
+      1 apple
+      1 fig
+      2 pear
+/ $ find /bin -name 'sha*sum' | sed 's|.*/||' | sort | head -3
+sha1sum
+sha224sum
+sha256sum
+/ $ echo 'shit os 2' | sed 's/2/two/' | tr a-z A-Z
+SHIT OS TWO
+/ $ du -sh /usr/share/lua
+6.0K    /usr/share/lua
+```
+
+That `sed` is running against a POSIX regular expression engine written for
+this from the specification, because sbase's `util.h` includes `<regex.h>` and
+so all ninety-four programs need one. `tools/check-regex.sh` builds it for the
+host and asks it and glibc the same 6498 questions; they agree on all of them.
+
+Porting it found **six real bugs**, all of them reachable long before anything
+reached them. The worst: our `printf` did not recognise `%j`, so it never
+consumed the length modifier, never saw the conversion after it, and took no
+argument for it -- every conversion later in the format string then read the
+wrong argument. `du`'s `"%jd\t%s\n"` passed a block count to `%s` and
+segfaulted on `0x1`. That bug was as old as the libc.
+
+The other five, and why each one only showed up now, are in
+[the roadmap](docs/roadmap.md).
 
 ## Building
 
@@ -128,7 +167,7 @@ Once it boots:
 ```
 include/shitos/      ABI shared by the kernel, modules and libc
   abi/                 syscall numbers, errno, POSIX structs
-  module/api.h         the driver ABI -- KernelApi v1
+  module/api.h         the driver ABI -- KernelApi v2
 
 kernel/
   arch/x86_64/         everything CPU-specific lives behind this boundary
@@ -142,12 +181,13 @@ kernel/
   lib/                 ErrorOr, spinlocks, containers, formatting
 
 modules/ps2kbd/      a loadable driver, in C, using nothing but KernelApi
-user/libc/           the C library
-user/libc/test/      host-side checks: libm accuracy, allocator behaviour
-user/bin/            init, sh and the utilities
-ports/lua/           Lua, fetched and built rather than vendored
-rootfs/              files copied into the image as-is
-tools/               mkinitrd, run-qemu, screenshot, genfont, check-libm, check-malloc
+modules/rtc/         the CMOS clock, the second one
+user/libc/           the C library, including the regex engine
+user/libc/test/      host-side checks: libm accuracy, allocator, regex
+user/bin/            init, sh, and the programs only this kernel can have
+ports/               Lua, dash and sbase -- fetched and verified, never vendored
+rootfs/              files copied into the image as-is, including /tests
+tools/               mkinitrd, run-qemu, screenshot, genfont, and the check-* suites
 ```
 
 ## Documentation
@@ -157,7 +197,7 @@ tools/               mkinitrd, run-qemu, screenshot, genfont, check-libm, check-
 - [System calls](docs/syscalls.md) — the surface, and what is missing
 - [Roadmap](docs/roadmap.md) — what is next and what is deliberately not
 - [Contributing](CONTRIBUTING.md) — style, conventions, how to test
-- [Third-party content](docs/third-party.md) — the one thing not written here
+- [Third-party content](docs/third-party.md) — the little that is not written here
 
 ## Design decisions worth knowing
 

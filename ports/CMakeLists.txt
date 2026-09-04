@@ -13,7 +13,7 @@
 option(SHITOS_PORTS "Build third-party ports (needs network on first build)" ON)
 
 if(NOT SHITOS_PORTS)
-    message(STATUS "Ports disabled; /bin will not contain lua or dash")
+    message(STATUS "Ports disabled; /bin will not contain lua, dash or sbase")
     return()
 endif()
 
@@ -62,3 +62,30 @@ add_custom_command(
 add_custom_target(port-dash ALL DEPENDS "${DASH_BINARY}")
 set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_TARGETS port-dash)
 set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_FILES "${DASH_BINARY}")
+
+# sbase builds ninety-odd programs, so the stamp rather than any one of them is
+# what the initrd depends on. suckless publishes no tarballs, so this one is
+# cloned at a pinned commit and the tree is hashed -- see ports/sbase/build.sh.
+find_program(GIT git)
+if(NOT GIT)
+    message(WARNING "git not found; the sbase port cannot be fetched")
+else()
+    set(SBASE_STAMP "${CMAKE_BINARY_DIR}/user/bin/.sbase-stamp")
+
+    add_custom_command(
+        OUTPUT "${SBASE_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E env
+                "SHITOS_CLANG=${CMAKE_C_COMPILER}"
+                "SHITOS_LIBC=$<TARGET_FILE:shitos_libc>"
+                "SHITOS_PORT_CACHE=${CMAKE_SOURCE_DIR}/.port-cache"
+                "${CMAKE_SOURCE_DIR}/ports/sbase/build.sh" "${CMAKE_BINARY_DIR}/user/bin"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${SBASE_STAMP}"
+        DEPENDS shitos_libc "${CMAKE_SOURCE_DIR}/ports/sbase/build.sh"
+        COMMENT "Building port: sbase"
+        VERBATIM
+    )
+
+    add_custom_target(port-sbase ALL DEPENDS "${SBASE_STAMP}")
+    set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_TARGETS port-sbase)
+    set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_FILES "${SBASE_STAMP}")
+endif()
