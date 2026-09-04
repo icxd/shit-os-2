@@ -104,6 +104,23 @@ jobs:
         # compare against. The host has both.
         run: ./tools/check-libm.sh
 
+  malloc:
+    name: allocator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm
+
+      - name: Check the allocator for correctness and throughput
+        # Heap corruption shows up long after the call that caused it, and
+        # timing an allocator inside QEMU measures QEMU. Both are better asked
+        # on the host, of the same stdlib.c that ships.
+        run: ./tools/check-malloc.sh
+
   format:
     name: formatting
     runs-on: ubuntu-latest

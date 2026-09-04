@@ -32,7 +32,7 @@ It is still not useful. It is now genuinely an operating system.
 | **Userland** | Ring 3, 33 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals, a TTY with canonical line discipline |
 | **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` `stty` |
 | **Ports** | **Lua 5.4**, unpatched, built against our libc |
-| **Tests** | 158 assertions in the kernel at every boot, plus a host-side libm check against glibc |
+| **Tests** | 176 assertions in the kernel at every boot, a userland suite run from `/etc/rc` before the shell, and host-side checks of the libm and the allocator |
 
 The shell has builtins, `PATH` lookup, pipelines, `<` `>` `>>` redirection and
 quoting. `^C` interrupts the foreground command. A null dereference in a
@@ -143,11 +143,11 @@ kernel/
 
 modules/ps2kbd/      a loadable driver, in C, using nothing but KernelApi
 user/libc/           the C library
-user/libc/test/      host-side libm accuracy check against glibc
+user/libc/test/      host-side checks: libm accuracy, allocator behaviour
 user/bin/            init, sh and the utilities
 ports/lua/           Lua, fetched and built rather than vendored
 rootfs/              files copied into the image as-is
-tools/               mkinitrd, run-qemu, screenshot, genfont, check-libm
+tools/               mkinitrd, run-qemu, screenshot, genfont, check-libm, check-malloc
 ```
 
 ## Documentation
@@ -177,11 +177,19 @@ not a restructuring.
 exceptions, no RTTI, no sentinel return codes that can be ignored by accident.
 
 **The self tests run on the machine.** An OS has no harness to run under, so
-158 assertions run during boot, covering the physical allocator, the heap, W^X,
-interrupt delivery, FPU state across context switches, all three filesystems,
-and the module loader. Several real bugs in this repository were found by them
-rather than by inspection. The libm is checked separately, on the host, against
-glibc in ULPs — `./tools/check-libm.sh`.
+176 assertions run during boot, covering the physical allocator, the heap, W^X,
+interrupt delivery, FPU state across context switches, inode lifetime, all
+three filesystems, and the module loader. Then `init` runs `/etc/rc`, which
+runs the ring 3 suite — the Lua and libc checks, and the file-lifetime
+regressions — before the shell appears. Several real bugs in this repository
+were found by these rather than by inspection.
+
+Two things are better asked on the host than inside QEMU, and are asked of the
+same source that ships: the libm, compared against glibc in ULPs
+(`./tools/check-libm.sh`), and the allocator, for both correctness and
+throughput (`./tools/check-malloc.sh`) — heap corruption surfaces long after
+the call that caused it, and timing an allocator under emulation measures the
+emulator.
 
 **Ports are the other test.** Everything in `user/bin` was written against a
 libc that was written for it, which proves nothing. Software nobody here wrote

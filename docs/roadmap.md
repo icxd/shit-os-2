@@ -17,37 +17,23 @@ What exists, what is next, and what is deliberately not being done yet.
   canonical line discipline.
 - A C library and twelve userland programs, reaching an interactive shell.
 - FPU and SSE state preserved across context switches.
+- Reference-counted inodes: unlinking a file that is still open no longer
+  frees it, so `tmpfile()` works and an open handle cannot read another
+  file's bytes.
 - **Lua 5.4 runs**, unpatched, from `ports/lua`. 68 of its own checks pass,
   including the floating point, string formatting, file I/O, garbage
   collection and error-unwinding paths.
-- 158 kernel self-test assertions at every boot, plus a host-side libm
-  accuracy check against glibc.
+- A libc allocator that is not linear in the size of the heap. It was: `free`
+  walked every block on every call, and Lua building and collecting 20000
+  small tables took 41 seconds. Now 41 ns per malloc/free pair on the host,
+  and the whole boot-plus-test sequence finishes in about a second.
+- 176 kernel self-test assertions at every boot, a userland suite run from
+  `/etc/rc` before the shell, and two host-side checks -- libm accuracy
+  against glibc, and the allocator.
 
 ## Next
 
 Roughly in the order that each one unblocks the most.
-
-**Reference-counted inodes.** The most serious known bug, and demonstrated
-rather than theorised. `TmpfsInode::unlink` destroys the inode immediately, so
-a process that still has the file open is left holding a dangling pointer into
-the kernel heap. Once that chunk is reused, the open handle reads whatever now
-occupies it:
-
-```lua
-local f = io.open("/tmp/x", "w")  f:write("CANARY-DATA-1234")  f:close()
-local g = io.open("/tmp/x", "r")
-os.remove("/tmp/x")
-for i = 1, 200 do                      -- churn the kernel heap
-  local h = io.open("/tmp/c" .. i, "w")  h:write("ZZZZZZZZ")  h:close()
-end
-print(g:read("a"))                     --> ZZZZZZZZ, not CANARY-DATA-1234
-```
-
-So it is not only a use-after-free, it discloses another file's contents to a
-process reading its own. The fix is a reference count on Inode, taken when a
-FileDescription is created and dropped when the last one closes, with the free
-deferred until it reaches zero. That also lets `tmpfile()` use the usual
-create-then-unlink trick, which it currently cannot.
 
 **A CMOS real-time clock.** `time()` currently reports seconds since boot,
 because there is no clock to ask. That makes every timestamp and every date a
@@ -77,11 +63,46 @@ extension syscalls doing a filesystem's job. `/proc/<pid>/status` and
 **A dynamic linker.** The kernel already lays out a correct auxiliary vector,
 so `ld.so` and a shared `libc.so` are userland work rather than kernel work.
 
-**Inode lifetime.** Inodes are owned by their filesystem and never freed. That
-is fine for RAM-backed filesystems and not fine the moment a disk is involved.
+**An inode cache with eviction.** Inodes are reference counted now, but a live
+one is never dropped from memory while its name exists. That is fine for
+RAM-backed filesystems, where the inode *is* the file, and not fine the moment
+a disk is involved and the tree is larger than RAM.
 
 **Job control.** Process groups, sessions and `tcsetpgrp`, so `^C` goes to a
 foreground *group* rather than to whichever process last read the terminal.
+
+## Fixed, and worth remembering
+
+**The unlink-while-open use-after-free.** `TmpfsInode::unlink` used to destroy
+the inode immediately, so a process that still had the file open was left with
+a dangling pointer into the kernel heap. Once that chunk was reused, the open
+handle read whatever now occupied it:
+
+```lua
+local f = io.open("/tmp/x", "w")  f:write("CANARY-DATA-1234")  f:close()
+local g = io.open("/tmp/x", "r")
+os.remove("/tmp/x")
+for i = 1, 200 do                      -- churn the kernel heap
+  local h = io.open("/tmp/c" .. i, "w")  h:write("ZZZZZZZZ")  h:close()
+end
+print(g:read("a"))                     --> ZZZZZZZZ, not CANARY-DATA-1234
+```
+
+So it was not only a use-after-free: it disclosed another file's contents to a
+process reading its own. Inodes now carry a reference count, taken by the
+directory that names them and by every open `FileDescription`, with the free
+deferred until it reaches zero. `/tests/uaf.lua` runs that exact reproduction
+at every boot, and `test_inode_lifetime` in `kernel/selftest.cpp` checks the
+counts directly.
+
+**A libc `free` that was linear in the heap.** Every call walked the entire
+block chain looking for adjacent free runs, which is invisible until something
+allocates in earnest. Lua's garbage collection test took 41 seconds, virtually
+all of it in that walk. Blocks are now doubly linked in address order so
+coalescing is two O(1) checks, and free blocks are threaded onto size-class
+lists through their own payloads, so the header did not have to grow.
+`tools/check-malloc.sh` builds the shipped `stdlib.c` for the host and fails if
+throughput goes back to linear.
 
 ## Later
 

@@ -31,11 +31,18 @@ and it is cheap: a new subsystem should arrive with a handful of checks that
 would have caught the bugs you hit writing it. Several of the checks in there
 exist because they caught something real.
 
-The libm is checked separately, against the host's glibc in ULPs, because the
-boot-time tests have nothing to compare numerical results against:
+Anything that only shows from ring 3 goes in `rootfs/tests`, which `/etc/rc`
+runs before the interactive shell comes up. A syscall regression belongs there
+rather than in the kernel's own tests.
+
+Two things are asked on the host instead, of the same source that ships. The
+libm, because the boot-time tests have nothing to compare numerical results
+against; and the allocator, because heap corruption surfaces long after the
+call that caused it, and timing an allocator inside QEMU measures QEMU:
 
 ```sh
 ./tools/check-libm.sh
+./tools/check-malloc.sh
 ```
 
 And the real test of the C library is software nobody here wrote:
