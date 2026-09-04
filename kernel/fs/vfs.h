@@ -112,8 +112,15 @@ public:
     virtual void on_description_opened(int flags) { (void)flags; }
     virtual void on_description_closed(int flags) { (void)flags; }
 
-    // Whether a read would return immediately. Used by the TTY and by poll.
+    // Whether an operation would return immediately, which is the whole of
+    // what poll needs to know. The defaults suit a regular file: always ready
+    // both ways, and never hung up.
     virtual bool can_read_without_blocking() const { return true; }
+    virtual bool can_write_without_blocking() const { return true; }
+
+    // True once no more data can ever arrive -- the write end of a pipe has
+    // gone. Reported as POLLHUP whether or not the caller asked for it.
+    virtual bool is_hung_up() const { return false; }
 
     virtual ErrorOr<void> stat(struct stat& out) const;
 

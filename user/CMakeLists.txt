@@ -32,6 +32,7 @@ set(LIBC_SOURCES
     libc/src/stdio.c
     libc/src/stdlib.c
     libc/src/strtod.c
+    libc/src/poll.c
     libc/src/string.c
     libc/src/time.c
     libc/src/syscall.c

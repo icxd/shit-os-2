@@ -31,6 +31,7 @@
 #include <shitos/abi/fcntl.h>
 #include <shitos/abi/ioctl.h>
 #include <shitos/abi/mman.h>
+#include <shitos/abi/poll.h>
 #include <shitos/abi/signal.h>
 #include <shitos/abi/syscall.h>
 #include <shitos/abi/time.h>
@@ -1009,6 +1010,90 @@ ErrorOr<u64> sys_rename(InterruptFrame&, u64 from_pointer, u64 to_pointer, u64, 
     return static_cast<u64>(0);
 }
 
+// The most descriptors one call may ask about. A real implementation would
+// allocate; this is a fixed bounce buffer, and 64 is the size of the whole
+// descriptor table, so no caller can legitimately need more.
+inline constexpr usize MAX_POLL_DESCRIPTORS = MAX_FILE_DESCRIPTORS;
+
+// Fills in revents for one entry. Returns true if anything was reported,
+// which is what decides whether poll returns rather than sleeps.
+bool poll_one(Process& process, struct pollfd& entry)
+{
+    entry.revents = 0;
+
+    // A negative fd is how a caller says "skip this one" without shuffling
+    // the array, and it is not an error.
+    if (entry.fd < 0)
+        return false;
+
+    auto description = process.description_for(entry.fd);
+    if (description.is_error()) {
+        entry.revents = POLLNVAL;
+        return true;
+    }
+
+    auto& inode = description.value()->inode();
+    i16 reported = 0;
+
+    if ((entry.events & POLLIN) != 0 && inode.can_read_without_blocking())
+        reported |= POLLIN;
+    if ((entry.events & POLLOUT) != 0 && inode.can_write_without_blocking())
+        reported |= POLLOUT;
+
+    // POLLHUP is reported whether or not it was asked for. A caller waiting
+    // to read from a pipe whose writer has gone would otherwise wait forever.
+    if (inode.is_hung_up())
+        reported |= POLLHUP;
+
+    entry.revents = reported;
+    return reported != 0;
+}
+
+ErrorOr<u64> sys_poll(InterruptFrame&, u64 pointer, u64 count, u64 timeout_ms, u64, u64, u64)
+{
+    if (count > MAX_POLL_DESCRIPTORS)
+        return Error::from_errno(EINVAL);
+
+    auto* process = Process::current();
+    struct pollfd entries[MAX_POLL_DESCRIPTORS];
+
+    if (count > 0)
+        TRY(copy_from_user(entries, pointer, count * sizeof(struct pollfd)));
+
+    auto const timeout = static_cast<i64>(timeout_ms);
+    u64 const deadline
+        = timeout > 0 ? clock_monotonic_ns() + static_cast<u64>(timeout) * 1'000'000 : 0;
+
+    for (;;) {
+        usize ready = 0;
+        for (usize i = 0; i < count; ++i) {
+            if (poll_one(*process, entries[i]))
+                ++ready;
+        }
+
+        if (ready > 0 || timeout == 0) {
+            if (count > 0)
+                TRY(copy_to_user(pointer, entries, count * sizeof(struct pollfd)));
+            return static_cast<u64>(ready);
+        }
+
+        if (timeout > 0 && clock_monotonic_ns() >= deadline) {
+            if (count > 0)
+                TRY(copy_to_user(pointer, entries, count * sizeof(struct pollfd)));
+            return static_cast<u64>(0);
+        }
+
+        // No wait queue spans arbitrary descriptors, so this polls on the
+        // timer rather than sleeping on the right one. It is the honest
+        // version of what the interface promises and the obvious thing to
+        // replace once inodes carry their own poll queues.
+        Scheduler::sleep_ms(4);
+
+        if (process->has_pending_signals())
+            return Error::from_errno(EINTR);
+    }
+}
+
 // --- extensions ---------------------------------------------------------
 
 ErrorOr<u64> sys_shitos_sysinfo(InterruptFrame&, u64 pointer, u64, u64, u64, u64, u64)
@@ -1205,6 +1290,7 @@ SyscallHandler const POSIX_SYSCALLS[SYS_MAX_POSIX] = {
     [SYS_getpgid] = sys_getpgid,
     [SYS_setsid] = sys_setsid,
     [SYS_getsid] = sys_getsid,
+    [SYS_poll] = sys_poll,
 };
 
 #pragma clang diagnostic pop

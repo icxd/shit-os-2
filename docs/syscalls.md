@@ -69,6 +69,7 @@ the top bit set.
 | 37 | `getpgid` | `(pid_t pid)` | |
 | 38 | `setsid` | `()` | `EPERM` for a group leader. |
 | 39 | `getsid` | `(pid_t pid)` | |
+| 40 | `poll` | `(struct pollfd*, nfds_t, int timeout_ms)` | `POLLIN`/`POLLOUT`/`POLLHUP`/`POLLNVAL`. `select` is a libc translation onto it. |
 
 ## Extensions
 
@@ -91,7 +92,6 @@ A `/proc` filesystem should replace the first three; see
 Deliberately absent rather than stubbed, so a caller finds out at build time
 rather than by getting a plausible wrong answer:
 
-- `select` / `poll`. The `poll_readable` device op exists for it.
 - Users and permissions. Everything runs as uid 0 and mode bits are recorded
   but never checked.
 - `readlink`, `symlink`, `link`, `chmod`, `chown`.

@@ -14,10 +14,12 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -474,6 +476,112 @@ static void test_sessions(void)
         "setsid is refused for a group leader and allowed for anyone else");
 }
 
+/* --- poll and select ---------------------------------------------------- */
+
+static void test_poll(void)
+{
+    int fds[2];
+    check_errno(pipe(fds) == 0, "pipe for poll");
+
+    struct pollfd entries[2];
+    entries[0].fd = fds[0];
+    entries[0].events = POLLIN;
+    entries[0].revents = 0;
+    entries[1].fd = fds[1];
+    entries[1].events = POLLOUT;
+    entries[1].revents = 0;
+
+    /* An empty pipe is not readable, and an empty pipe is writable. A zero
+     * timeout makes this a question rather than a wait. */
+    int ready = poll(entries, 2, 0);
+    check_errno(ready >= 0, "poll with a zero timeout returns");
+    check(ready == 1, "only the writable end is ready");
+    check((entries[0].revents & POLLIN) == 0, "an empty pipe is not readable");
+    check((entries[1].revents & POLLOUT) != 0, "an empty pipe is writable");
+
+    check(write(fds[1], "x", 1) == 1, "writing a byte into the pipe");
+    entries[0].revents = entries[1].revents = 0;
+    ready = poll(entries, 2, 0);
+    check(ready == 2, "now both ends are ready");
+    check((entries[0].revents & POLLIN) != 0, "and the read end says so");
+
+    /* Closing the writer is a hangup, and it must be reported whether or not
+     * the caller asked -- otherwise a reader waits for data that cannot come. */
+    char scratch[4];
+    check(read(fds[0], scratch, 1) == 1, "draining the byte");
+    close(fds[1]);
+    entries[0].events = POLLIN;
+    entries[0].revents = 0;
+    ready = poll(entries, 1, 0);
+    check(ready == 1, "a pipe with no writers is ready");
+    check((entries[0].revents & POLLHUP) != 0, "and reports POLLHUP");
+    close(fds[0]);
+
+    /* A closed descriptor is POLLNVAL, not an error return. */
+    entries[0].fd = fds[0];
+    entries[0].events = POLLIN;
+    entries[0].revents = 0;
+    check(poll(entries, 1, 0) == 1, "polling a closed descriptor returns it as ready");
+    check((entries[0].revents & POLLNVAL) != 0, "with POLLNVAL");
+
+    /* A negative fd is how a caller skips an entry without shuffling. */
+    entries[0].fd = -1;
+    entries[0].events = POLLIN;
+    entries[0].revents = 0;
+    check(poll(entries, 1, 0) == 0, "a negative fd is skipped");
+    check(entries[0].revents == 0, "and its revents is cleared");
+
+    /* And a timeout has to actually elapse. */
+    struct timespec before;
+    struct timespec after;
+    clock_gettime(CLOCK_MONOTONIC, &before);
+    check(poll(NULL, 0, 40) == 0, "poll with nothing to watch times out");
+    clock_gettime(CLOCK_MONOTONIC, &after);
+    long const elapsed_ms = (long)((after.tv_sec - before.tv_sec) * 1000
+        + (after.tv_nsec - before.tv_nsec) / 1000000);
+    check(elapsed_ms >= 30, "and waited roughly the requested time");
+}
+
+static void test_select(void)
+{
+    int fds[2];
+    check_errno(pipe(fds) == 0, "pipe for select");
+
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(fds[0], &readable);
+
+    struct timeval immediately = { 0, 0 };
+    int ready = select(fds[0] + 1, &readable, NULL, NULL, &immediately);
+    check_errno(ready >= 0, "select returns");
+    check(ready == 0, "an empty pipe is not readable");
+    check(!FD_ISSET(fds[0], &readable), "and the set was cleared");
+
+    check(write(fds[1], "y", 1) == 1, "writing into the pipe");
+    FD_ZERO(&readable);
+    FD_SET(fds[0], &readable);
+    immediately.tv_sec = 0;
+    immediately.tv_usec = 0;
+    ready = select(fds[0] + 1, &readable, NULL, NULL, &immediately);
+    check(ready == 1, "now it is readable");
+    check(FD_ISSET(fds[0], &readable), "and select says which");
+
+    /* Both directions at once, on two different descriptors. */
+    fd_set writable;
+    FD_ZERO(&readable);
+    FD_ZERO(&writable);
+    FD_SET(fds[0], &readable);
+    FD_SET(fds[1], &writable);
+    immediately.tv_sec = 0;
+    immediately.tv_usec = 0;
+    ready = select(fds[1] + 1, &readable, &writable, NULL, &immediately);
+    check(ready == 2, "select counts both sets");
+    check(FD_ISSET(fds[0], &readable) && FD_ISSET(fds[1], &writable), "and reports both");
+
+    close(fds[0]);
+    close(fds[1]);
+}
+
 int main(int argc, char** argv, char** envp)
 {
     (void)envp;
@@ -494,6 +602,8 @@ int main(int argc, char** argv, char** envp)
     test_background_read();
     test_terminal_ownership();
     test_sessions();
+    test_poll();
+    test_select();
 
     printf("%d passed, %d failed\n", s_checks - s_failures, s_failures);
     return s_failures == 0 ? 0 : 1;

@@ -82,6 +82,19 @@ bool PipeInode::can_read_without_blocking() const
     return used() > 0 || m_writers == 0;
 }
 
+bool PipeInode::can_write_without_blocking() const
+{
+    // A pipe with no readers left never blocks: the write fails immediately
+    // with EPIPE, which is a completed operation as far as poll is concerned.
+    return available() > 0 || m_readers == 0;
+}
+
+bool PipeInode::is_hung_up() const
+{
+    // No writers and nothing buffered: end of file, for good.
+    return m_writers == 0 && used() == 0;
+}
+
 ErrorOr<usize> PipeInode::read(u64, void* buffer, usize length)
 {
     if (length == 0)

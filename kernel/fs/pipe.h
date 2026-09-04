@@ -24,6 +24,8 @@ public:
     ErrorOr<usize> read(u64 offset, void* buffer, usize length) override;
     ErrorOr<usize> write(u64 offset, void const* buffer, usize length) override;
     bool can_read_without_blocking() const override;
+    bool can_write_without_blocking() const override;
+    bool is_hung_up() const override;
 
     void on_description_opened(int flags) override;
     void on_description_closed(int flags) override;
