@@ -30,7 +30,7 @@ It is still not useful. It is now genuinely an operating system.
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
 | **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard and CMOS clock drivers, written in C |
 | **Userland** | Ring 3, 43 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, job control with process groups and sessions, a TTY with canonical line discipline |
-| **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` `stty` `sleep` |
+| **Programs** | `init` `sh` `ls` `cat` `echo` `mkdir` `rm` `ps` `free` `lsmod` `uname` `stty` `sleep` `date` |
 | **Ports** | **Lua 5.4** and **dash**, both unpatched, built against our libc |
 | **Tests** | 198 assertions in the kernel at every boot, 228 more from ring 3 run by `/etc/rc` before the shell, and host-side checks of the libm and the allocator |
 

@@ -126,5 +126,12 @@ check "unexported variable does not" "$(BAZ=quux dash -c 'echo ${BAZ:-unset}')" 
 check "PATH lookup" "$(command -v echo > /dev/null && echo found)" "found"
 check "pwd" "$(cd /tmp && pwd)" "/tmp"
 
+# The clock, from the far end of a pipe: a real year means the CMOS was read
+# at boot and the offset applied, not that time() fell back to uptime.
+year=$(date +%Y)
+check "date reports this century" "${year%??}" "20"
+stamp=$(date +%Y-%m-%d)
+check "date renders a full timestamp" "${#stamp}" "10"
+
 echo "$ok passed, $fail failed"
 [ "$fail" -eq 0 ]
