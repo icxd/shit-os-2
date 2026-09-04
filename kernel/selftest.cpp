@@ -4,6 +4,9 @@
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/arch/x86_64/interrupts.h>
 #include <kernel/boot/boot_info.h>
+#include <kernel/fs/devfs.h>
+#include <kernel/fs/tmpfs.h>
+#include <kernel/fs/vfs.h>
 #include <kernel/dev/console.h>
 #include <kernel/lib/string.h>
 #include <kernel/mm/address_space.h>
@@ -358,7 +361,185 @@ void test_scheduler()
     check(Scheduler::thread_count() <= count_before, "finished threads get reaped");
 }
 
+// --- filesystems --------------------------------------------------------
+
+void test_vfs()
+{
+    check(fs::root_inode() != nullptr, "there is a root inode");
+    check(fs::mount_count() == 3, "three filesystems are mounted");
+
+    // The initrd, read-only, with content the build put there.
+    auto motd = fs::resolve("/etc/motd");
+    check(!motd.is_error(), "resolving a path into the initrd");
+    if (!motd.is_error()) {
+        check(motd.value()->type() == fs::InodeType::Regular, "/etc/motd is a regular file");
+        check(motd.value()->size() > 0, "/etc/motd is not empty");
+
+        char buffer[64] = {};
+        auto read = motd.value()->read(0, buffer, sizeof(buffer) - 1);
+        check(!read.is_error() && read.value() > 0, "reading from the initrd");
+        if (!read.is_error())
+            check(strstr(buffer, "shit os 2") != nullptr, "the initrd content is what we packed");
+
+        // Reading past the end returns zero bytes rather than failing.
+        auto past_end = motd.value()->read(motd.value()->size() + 10, buffer, 8);
+        check(!past_end.is_error() && past_end.value() == 0, "reading past EOF returns nothing");
+    }
+
+    auto missing = fs::resolve("/does/not/exist");
+    check(missing.is_error() && missing.error().code() == ENOENT, "a missing path is ENOENT");
+
+    // The initrd is read-only and must say so rather than pretending.
+    auto readonly_write = fs::open("/etc/motd", O_WRONLY, 0);
+    check(readonly_write.is_error(), "the initrd refuses to be opened for writing");
+
+    // Mount traversal: /tmp resolves into tmpfs, not into the initrd's
+    // empty placeholder directory.
+    auto tmp = fs::resolve("/tmp");
+    check(!tmp.is_error(), "resolving /tmp");
+    if (!tmp.is_error())
+        check(strcmp(tmp.value()->filesystem()->name(), "tmpfs") == 0, "/tmp crosses into tmpfs");
+
+    auto dev = fs::resolve("/dev");
+    check(!dev.is_error(), "resolving /dev");
+    if (!dev.is_error())
+        check(strcmp(dev.value()->filesystem()->name(), "devfs") == 0, "/dev crosses into devfs");
+}
+
+void test_tmpfs()
+{
+    char const* payload = "the quick brown fox jumps over the lazy dog";
+    usize const payload_length = strlen(payload);
+
+    auto created = fs::open("/tmp/selftest.txt", O_RDWR | O_CREAT, 0644);
+    check(!created.is_error(), "creating a file on tmpfs");
+    if (created.is_error())
+        return;
+
+    auto* file = created.value();
+    auto written = file->write(payload, payload_length);
+    check(!written.is_error() && written.value() == payload_length, "writing to tmpfs");
+
+    check(!file->seek(0, SEEK_SET).is_error(), "seeking back to the start");
+
+    char buffer[128] = {};
+    auto read = file->read(buffer, sizeof(buffer) - 1);
+    check(!read.is_error() && read.value() == payload_length, "reading back the same length");
+    check(strcmp(buffer, payload) == 0, "reading back the same bytes");
+
+    // Growing past the current end has to leave zeroes, not heap garbage.
+    check(!file->seek(0, SEEK_END).is_error(), "seeking to the end");
+    auto appended = file->write("!", 1);
+    check(!appended.is_error(), "appending to tmpfs");
+
+    auto reopened = fs::resolve("/tmp/selftest.txt");
+    check(!reopened.is_error(), "the file is visible by path");
+    if (!reopened.is_error())
+        check(reopened.value()->size() == payload_length + 1, "the size reflects the append");
+
+    // Directories.
+    auto tmp = fs::resolve("/tmp");
+    check(!tmp.is_error(), "resolving /tmp for mkdir");
+    if (!tmp.is_error()) {
+        auto directory = tmp.value()->create("subdir", fs::InodeType::Directory, 0755);
+        check(!directory.is_error(), "creating a directory on tmpfs");
+
+        auto duplicate = tmp.value()->create("subdir", fs::InodeType::Directory, 0755);
+        check(duplicate.is_error() && duplicate.error().code() == EEXIST,
+            "creating an existing name is EEXIST");
+
+        auto nested = fs::open("/tmp/subdir/nested.txt", O_RDWR | O_CREAT, 0644);
+        check(!nested.is_error(), "creating a file inside a new directory");
+
+        auto non_empty = tmp.value()->unlink("subdir");
+        check(non_empty.is_error() && non_empty.error().code() == ENOTEMPTY,
+            "removing a non-empty directory is ENOTEMPTY");
+
+        if (!nested.is_error()) {
+            auto* subdir = fs::resolve("/tmp/subdir").value();
+            check(!subdir->unlink("nested.txt").is_error(), "unlinking a file");
+            check(!tmp.value()->unlink("subdir").is_error(), "removing the now-empty directory");
+            check(fs::resolve("/tmp/subdir").is_error(), "the removed directory is gone");
+        }
+    }
+
+    // getdents, through a real FileDescription.
+    auto directory_fd = fs::open("/tmp", O_RDONLY | O_DIRECTORY, 0);
+    check(!directory_fd.is_error(), "opening a directory");
+    if (!directory_fd.is_error()) {
+        u8 entries[512];
+        auto bytes = directory_fd.value()->get_directory_entries(entries, sizeof(entries));
+        check(!bytes.is_error() && bytes.value() > 0, "getdents returns entries");
+
+        bool found_self = false;
+        bool found_file = false;
+        usize offset = 0;
+        while (!bytes.is_error() && offset < bytes.value()) {
+            auto const* entry = reinterpret_cast<struct dirent const*>(entries + offset);
+            if (strcmp(entry->d_name, ".") == 0)
+                found_self = true;
+            if (strcmp(entry->d_name, "selftest.txt") == 0)
+                found_file = true;
+            check(entry->d_reclen % 8 == 0, "dirent records stay 8-aligned");
+            offset += entry->d_reclen;
+        }
+        check(found_self, "getdents includes .");
+        check(found_file, "getdents includes the file we created");
+    }
+}
+
+void test_devfs()
+{
+    auto zero = fs::open("/dev/zero", O_RDONLY, 0);
+    check(!zero.is_error(), "opening /dev/zero");
+    if (!zero.is_error()) {
+        u8 buffer[64];
+        memset(buffer, 0xFF, sizeof(buffer));
+        auto read = zero.value()->read(buffer, sizeof(buffer));
+        check(!read.is_error() && read.value() == sizeof(buffer), "/dev/zero reads a full buffer");
+        bool all_zero = true;
+        for (u8 byte : buffer)
+            all_zero &= byte == 0;
+        check(all_zero, "/dev/zero really returns zeroes");
+    }
+
+    auto null_device = fs::open("/dev/null", O_RDWR, 0);
+    check(!null_device.is_error(), "opening /dev/null");
+    if (!null_device.is_error()) {
+        u8 buffer[8];
+        auto read = null_device.value()->read(buffer, sizeof(buffer));
+        check(!read.is_error() && read.value() == 0, "/dev/null reads EOF");
+        auto written = null_device.value()->write("discarded", 9);
+        check(!written.is_error() && written.value() == 9, "/dev/null swallows writes");
+    }
+
+    auto stat_target = fs::resolve("/dev/zero");
+    check(!stat_target.is_error(), "resolving /dev/zero");
+    if (!stat_target.is_error()) {
+        struct stat status;
+        check(!stat_target.value()->stat(status).is_error(), "stat on a device node");
+        check(S_ISCHR(status.st_mode), "stat reports a character device");
+    }
+}
+
 } // namespace
+
+void run_filesystem_selftests()
+{
+    s_checks_run = 0;
+    s_checks_failed = 0;
+
+    test_vfs();
+    test_tmpfs();
+    test_devfs();
+
+    if (s_checks_failed == 0) {
+        klog(LOG_INFO, "selftest", "%zu filesystem checks passed", s_checks_run);
+    } else {
+        klog(LOG_ERROR, "selftest", "%zu of %zu filesystem checks FAILED", s_checks_failed, s_checks_run);
+        panic("filesystem self tests failed");
+    }
+}
 
 void run_scheduler_selftests()
 {

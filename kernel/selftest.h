@@ -18,4 +18,7 @@ void run_boot_selftests();
 // Needs a running scheduler, so it runs later than the rest.
 void run_scheduler_selftests();
 
+// Needs the filesystems mounted.
+void run_filesystem_selftests();
+
 } // namespace kernel

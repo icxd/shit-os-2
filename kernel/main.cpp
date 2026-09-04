@@ -15,6 +15,8 @@
 #include <kernel/boot/boot_info.h>
 #include <kernel/dev/console.h>
 #include <kernel/dev/framebuffer.h>
+#include <kernel/fs/boot_mounts.h>
+#include <kernel/fs/vfs.h>
 #include <kernel/lib/spinlock.h>
 #include <kernel/mm/address_space.h>
 #include <kernel/mm/heap.h>
@@ -165,7 +167,11 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
     Scheduler::initialize();
     run_scheduler_selftests();
 
-    klog(LOG_INFO, "boot", "stage C complete: timer, threads, preemptive scheduling");
+    if (auto mounted = fs::mount_boot_filesystems(info); mounted.is_error())
+        panic("could not mount the boot filesystems: %s", mounted.error().to_string());
+    run_filesystem_selftests();
+
+    klog(LOG_INFO, "boot", "stage D complete: vfs with initrd, tmpfs and devfs");
     klog(LOG_INFO, "boot", "uptime %llu ms, %zu threads, %llu context switches",
         Scheduler::uptime_ms(), Scheduler::thread_count(), Scheduler::context_switches());
 

@@ -13,7 +13,13 @@ set(KERNEL_SOURCES
     boot/boot_info.cpp
     dev/console.cpp
     dev/framebuffer.cpp
+    fs/boot_mounts.cpp
+    fs/devfs.cpp
+    fs/tmpfs.cpp
+    fs/ustar.cpp
+    fs/vfs.cpp
     lib/cxx_support.cpp
+    lib/error.cpp
     lib/format.cpp
     lib/string.cpp
     mm/address_space.cpp
