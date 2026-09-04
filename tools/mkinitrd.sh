@@ -52,11 +52,19 @@ if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR/modules" ]; then
     find "$BUILD_DIR/modules" -name '*.ko' -exec cp {} "$STAGING/lib/modules/" \; 2>/dev/null || true
 fi
 
+# GNU tar, which on macOS is gtar from Homebrew: the flags below are GNU
+# spellings that bsdtar -- the system tar there -- does not accept.
+if command -v gtar >/dev/null 2>&1; then
+    TAR=gtar
+else
+    TAR=tar
+fi
+
 # --format=ustar is the whole point: our reader implements ustar and nothing
 # else, so a GNU-format archive with long-name extensions would not parse.
 # Sorted order keeps the image byte-identical across rebuilds.
 ( cd "$STAGING" && find . -mindepth 1 | LC_ALL=C sort \
-    | tar --format=ustar --no-recursion --owner=0 --group=0 --numeric-owner \
+    | $TAR --format=ustar --no-recursion --owner=0 --group=0 --numeric-owner \
           --mtime=@0 -cf "$OUTPUT" -T - )
 
 echo "initrd: $(wc -c < "$OUTPUT") bytes -> $OUTPUT"
