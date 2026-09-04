@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <kernel/arch/x86_64/percpu_offsets.h>
 #include <kernel/lib/kstd.h>
 #include <shitos/types.h>
 
@@ -39,8 +40,20 @@ struct Cpu {
     // at depth zero.
     u32 preempt_disable_count;
 
+    // Where a trap or syscall from ring 3 should land. Updated on every
+    // context switch, alongside the TSS's rsp0.
     u64 kernel_stack_top;
+
+    // syscall gives us no stack, so the entry stub parks the user's rsp here
+    // for the two instructions it takes to switch to the kernel one.
+    u64 syscall_scratch_rsp;
 };
+
+// Offsets the assembly entry stubs use. Kept honest by the static_asserts
+// below, so moving a field breaks the build rather than the kernel.
+static_assert(__builtin_offsetof(Cpu, self) == 0, "gs:0 must be the self pointer");
+static_assert(__builtin_offsetof(Cpu, kernel_stack_top) == CPU_OFFSET_KERNEL_STACK_TOP);
+static_assert(__builtin_offsetof(Cpu, syscall_scratch_rsp) == CPU_OFFSET_SYSCALL_SCRATCH_RSP);
 
 void percpu_initialize_bootstrap();
 

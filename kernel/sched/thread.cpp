@@ -117,6 +117,62 @@ ErrorOr<Thread*> Thread::adopt_current_context(char const* name)
     return thread;
 }
 
+// The common part of standing up a thread with its own kernel stack.
+ErrorOr<Thread*> Thread::allocate_with_stack(char const* name, InterruptFrame*& frame_out)
+{
+    auto* thread = static_cast<Thread*>(kzalloc(sizeof(Thread)));
+    if (thread == nullptr)
+        return Error::from_errno(ENOMEM);
+    new (thread) Thread();
+
+    auto* stack = static_cast<u8*>(kmalloc_aligned(KERNEL_STACK_SIZE, PAGE_SIZE));
+    if (stack == nullptr) {
+        kfree(thread);
+        return Error::from_errno(ENOMEM);
+    }
+
+    thread->m_tid = s_next_tid++;
+    strncpy(thread->m_name, name, THREAD_NAME_MAX - 1);
+    thread->m_kernel_stack = stack;
+    thread->m_owns_kernel_stack = true;
+    thread->m_kernel_stack_top = reinterpret_cast<u64>(stack) + KERNEL_STACK_SIZE;
+
+    u64 const stack_top = align_down<u64>(thread->m_kernel_stack_top, 16);
+    frame_out = reinterpret_cast<InterruptFrame*>(stack_top - sizeof(InterruptFrame));
+    memset(frame_out, 0, sizeof(InterruptFrame));
+    return thread;
+}
+
+ErrorOr<Thread*> Thread::create_user_thread(char const* name, u64 entry, u64 user_stack)
+{
+    InterruptFrame* frame = nullptr;
+    auto* thread = TRY(allocate_with_stack(name, frame));
+
+    frame->rip = entry;
+    frame->cs = arch::SELECTOR_USER_CODE;
+    frame->ss = arch::SELECTOR_USER_DATA;
+    frame->rflags = 0x202; // IF set, plus the always-one bit
+    frame->rsp = user_stack;
+
+    thread->m_frame = frame;
+    thread->m_state = ThreadState::Ready;
+    return thread;
+}
+
+ErrorOr<Thread*> Thread::create_from_frame(char const* name, InterruptFrame const& source)
+{
+    InterruptFrame* frame = nullptr;
+    auto* thread = TRY(allocate_with_stack(name, frame));
+
+    *frame = source;
+    // The child of a fork sees zero where the parent sees the child's pid.
+    frame->rax = 0;
+
+    thread->m_frame = frame;
+    thread->m_state = ThreadState::Ready;
+    return thread;
+}
+
 Thread::~Thread()
 {
     if (m_owns_kernel_stack && m_kernel_stack != nullptr)

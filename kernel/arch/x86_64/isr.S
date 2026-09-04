@@ -80,6 +80,19 @@ isr_common:
      */
     movq %rax, %rsp
 
+/*
+ * Shared return path. The syscall entry stub builds an identical frame and
+ * jumps here, so there is exactly one piece of code that returns to userspace.
+ *
+ * It returns with iretq even from a syscall, where sysretq would be faster.
+ * That is deliberate: the dispatcher may hand back a *different* thread's
+ * frame, and that thread might have been suspended by an interrupt rather than
+ * by a syscall. One return path that always works beats two that each work
+ * only sometimes.
+ */
+.global isr_return
+.type isr_return, @function
+isr_return:
     testb $3, FRAME_CS_OFFSET(%rsp)
     jz 2f
     swapgs

@@ -105,6 +105,11 @@ public:
     // kernel half is shared and is deliberately left alone.
     void destroy_user_mappings();
 
+    // A duplicate of the user half for fork(). Pages are copied eagerly rather
+    // than shared copy-on-write, which is wasteful for the fork-then-exec case
+    // a shell spends all its time in; COW is on the roadmap.
+    ErrorOr<AddressSpace*> clone_user_space() const;
+
     usize resident_bytes() const { return m_resident_pages * PAGE_SIZE; }
 
 private:

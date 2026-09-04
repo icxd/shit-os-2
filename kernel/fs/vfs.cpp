@@ -404,6 +404,7 @@ ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* bas
     if (description == nullptr)
         return Error::from_errno(ENOMEM);
     new (description) FileDescription(*inode, flags);
+    inode->on_description_opened(flags);
 
     if ((flags & O_APPEND) != 0)
         (void)description->seek(0, SEEK_END);

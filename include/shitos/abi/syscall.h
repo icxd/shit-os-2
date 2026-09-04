@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include <shitos/types.h>
+
 #define SYS_exit 0
 #define SYS_read 1
 #define SYS_write 2

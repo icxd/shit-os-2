@@ -10,11 +10,14 @@ set(KERNEL_SOURCES
     arch/x86_64/pic.cpp
     arch/x86_64/pit.cpp
     arch/x86_64/serial.cpp
+    arch/x86_64/syscall_entry.S
     boot/boot_info.cpp
     dev/console.cpp
     dev/framebuffer.cpp
+    dev/tty.cpp
     fs/boot_mounts.cpp
     fs/devfs.cpp
+    fs/pipe.cpp
     fs/tmpfs.cpp
     fs/ustar.cpp
     fs/vfs.cpp
@@ -27,9 +30,14 @@ set(KERNEL_SOURCES
     mm/physical.cpp
     module/kernel_api.cpp
     module/loader.cpp
+    sched/process.cpp
     sched/scheduler.cpp
     sched/thread.cpp
     sched/waitqueue.cpp
+    sys/elf_loader.cpp
+    sys/fault.cpp
+    sys/syscall.cpp
+    sys/userland.cpp
     main.cpp
     panic.cpp
     selftest.cpp

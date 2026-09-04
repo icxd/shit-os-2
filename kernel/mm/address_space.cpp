@@ -7,6 +7,7 @@
 #include <kernel/lib/spinlock.h>
 #include <kernel/lib/string.h>
 #include <kernel/mm/address_space.h>
+#include <kernel/mm/heap.h>
 #include <kernel/mm/physical.h>
 #include <kernel/panic.h>
 
@@ -340,6 +341,65 @@ ErrorOr<AddressSpace*> AddressSpace::create_user_space()
         return Error::from_errno(ENOMEM);
     }
     return space;
+}
+
+ErrorOr<AddressSpace*> AddressSpace::clone_user_space() const
+{
+    auto* copy = TRY(create_user_space());
+
+    u64 const* pml4 = static_cast<u64 const*>(phys_to_virt(m_root));
+
+    for (usize pml4_index = 0; pml4_index < 256; ++pml4_index) {
+        u64 const pml4_entry = pml4[pml4_index];
+        if (!(pml4_entry & static_cast<u64>(PageFlags::Present)))
+            continue;
+
+        u64 const* pdpt = static_cast<u64 const*>(phys_to_virt(phys(pml4_entry & ADDRESS_MASK)));
+        for (usize pdpt_index = 0; pdpt_index < ENTRIES_PER_TABLE; ++pdpt_index) {
+            u64 const pdpt_entry = pdpt[pdpt_index];
+            if (!(pdpt_entry & static_cast<u64>(PageFlags::Present)))
+                continue;
+
+            u64 const* pd = static_cast<u64 const*>(phys_to_virt(phys(pdpt_entry & ADDRESS_MASK)));
+            for (usize pd_index = 0; pd_index < ENTRIES_PER_TABLE; ++pd_index) {
+                u64 const pd_entry = pd[pd_index];
+                if (!(pd_entry & static_cast<u64>(PageFlags::Present))
+                    || (pd_entry & static_cast<u64>(PageFlags::Huge)))
+                    continue;
+
+                u64 const* pt = static_cast<u64 const*>(phys_to_virt(phys(pd_entry & ADDRESS_MASK)));
+                for (usize pt_index = 0; pt_index < ENTRIES_PER_TABLE; ++pt_index) {
+                    u64 const pt_entry = pt[pt_index];
+                    if (!(pt_entry & static_cast<u64>(PageFlags::Present)))
+                        continue;
+
+                    u64 const address = (pml4_index << 39) | (pdpt_index << 30)
+                        | (pd_index << 21) | (pt_index << 12);
+
+                    auto frame = allocate_page();
+                    if (frame.is_error()) {
+                        copy->destroy_user_mappings();
+                        kfree(copy);
+                        return frame.error();
+                    }
+
+                    memcpy(phys_to_virt(frame.value()),
+                        phys_to_virt(phys(pt_entry & ADDRESS_MASK)), PAGE_SIZE);
+
+                    auto const flags = static_cast<PageFlags>(pt_entry & ~ADDRESS_MASK);
+                    if (auto mapped = copy->map(virt(address), frame.value(), flags);
+                        mapped.is_error()) {
+                        free_page(frame.value());
+                        copy->destroy_user_mappings();
+                        kfree(copy);
+                        return mapped.error();
+                    }
+                }
+            }
+        }
+    }
+
+    return copy;
 }
 
 ErrorOr<void*> map_mmio(PhysAddr base, usize length)

@@ -8,6 +8,7 @@
 #include <kernel/lib/spinlock.h>
 #include <kernel/mm/heap.h>
 #include <kernel/panic.h>
+#include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
 
 namespace kernel {
@@ -128,9 +129,24 @@ InterruptFrame* Scheduler::switch_to_next(InterruptFrame* frame, bool requeue_cu
     if (next != previous)
         ++cpu->context_switches;
 
-    // A trap taken while this thread is in userspace has to land on this
-    // thread's kernel stack, not on whichever one was there before.
+    // A trap or syscall taken while this thread is in userspace has to land on
+    // this thread's kernel stack, not on whichever one was there before. The
+    // TSS is what the CPU reads for a trap; the per-CPU copy is what the
+    // syscall stub reads, since syscall does not consult the TSS at all.
     arch::tss_set_kernel_stack(next->kernel_stack_top());
+    cpu->kernel_stack_top = next->kernel_stack_top();
+
+    // Switching to a thread in a different address space means switching CR3.
+    // Kernel threads have no address space of their own and simply keep
+    // whichever one was already loaded -- the kernel half is identical in all
+    // of them, so that is safe.
+    if (auto* process = next->process(); process != nullptr) {
+        auto* space = process->address_space();
+        if (space != nullptr && (previous == nullptr || previous->process() == nullptr
+                || previous->process()->address_space() != space)) {
+            space->activate();
+        }
+    }
 
     return next->m_frame;
 }

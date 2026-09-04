@@ -44,6 +44,13 @@ public:
     // first context switch has somewhere to save its state.
     static ErrorOr<Thread*> adopt_current_context(char const* name);
 
+    // A thread that starts in ring 3 at `entry` with `user_stack`.
+    static ErrorOr<Thread*> create_user_thread(char const* name, u64 entry, u64 user_stack);
+
+    // A thread resuming from a copy of somebody else's frame, which is what
+    // fork() is: same registers, different address space, rax zero.
+    static ErrorOr<Thread*> create_from_frame(char const* name, InterruptFrame const& frame);
+
     ~Thread();
 
     u32 tid() const { return m_tid; }
@@ -69,6 +76,10 @@ private:
     friend class WaitQueue;
 
     Thread() = default;
+
+    // Allocates a Thread plus its kernel stack and reserves a frame at the top
+    // of that stack. Shared by every factory above.
+    static ErrorOr<Thread*> allocate_with_stack(char const* name, InterruptFrame*& frame_out);
 
     u32 m_tid { 0 };
     char m_name[THREAD_NAME_MAX] {};

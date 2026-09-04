@@ -59,11 +59,13 @@ if [ "$EXPECT_OK" = 1 ]; then
     trap 'rm -f "$LOG"' EXIT
     timeout "$TIMEOUT" qemu-system-x86_64 "$@" -display none -serial "file:$LOG" >/dev/null 2>&1 || true
     cat "$LOG"
-    if grep -q 'init: exec /bin/sh' "$LOG"; then
-        echo "run-qemu: boot markers found" >&2
+    # The shell's own banner is the marker, because reaching it proves the
+    # whole chain: kernel, init, fork, execve, the TTY and stdout.
+    if grep -q 'type .help. for what actually works' "$LOG"; then
+        echo "run-qemu: reached a userland shell prompt" >&2
         exit 0
     fi
-    echo "run-qemu: kernel never reached userland within ${TIMEOUT}s" >&2
+    echo "run-qemu: never reached a shell prompt within ${TIMEOUT}s" >&2
     exit 1
 fi
 

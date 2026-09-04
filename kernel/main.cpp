@@ -15,6 +15,7 @@
 #include <kernel/boot/boot_info.h>
 #include <kernel/dev/console.h>
 #include <kernel/dev/framebuffer.h>
+#include <kernel/dev/tty.h>
 #include <kernel/fs/boot_mounts.h>
 #include <kernel/fs/vfs.h>
 #include <kernel/lib/spinlock.h>
@@ -23,7 +24,10 @@
 #include <kernel/mm/physical.h>
 #include <kernel/module/loader.h>
 #include <kernel/panic.h>
+#include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
+#include <kernel/sys/syscall.h>
+#include <kernel/sys/userland.h>
 #include <kernel/selftest.h>
 
 namespace kernel {
@@ -179,12 +183,33 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
         klog(LOG_INFO, "module", "%zu module(s) loaded", loaded.value());
     run_module_selftests();
 
+    Process::initialize();
+    sys::syscall_initialize();
+    sys::faults_initialize();
+
+    if (auto tty = dev::Tty::initialize(); tty.is_error())
+        klog(LOG_WARN, "tty", "no terminal: %s", tty.error().to_string());
+    else {
+        if (auto input = Thread::create_kernel_thread("tty-kbd", dev::tty_input_thread, nullptr);
+            !input.is_error())
+            Scheduler::enqueue(input.value());
+        if (auto serial = Thread::create_kernel_thread("tty-serial", dev::tty_serial_input_thread,
+                nullptr);
+            !serial.is_error())
+            Scheduler::enqueue(serial.value());
+    }
+
     klog(LOG_INFO, "boot", "stage E complete: runtime-loadable driver modules");
     klog(LOG_INFO, "boot", "uptime %llu ms, %zu threads, %llu context switches",
         Scheduler::uptime_ms(), Scheduler::thread_count(), Scheduler::context_switches());
 
-    // Stage D onwards replaces this with mounting the filesystems and starting
-    // init. Until then, keep the machine alive so the timer keeps ticking.
+    if (auto started = sys::start_init("/bin/init"); started.is_error()) {
+        klog(LOG_ERROR, "init", "could not start /bin/init: %s", started.error().to_string());
+        klog(LOG_ERROR, "init", "there is no userland, so there is nothing else to do");
+    }
+
+    // kmain has nothing left to do. It cannot exit -- something has to be the
+    // thread the boot stack belongs to -- so it becomes a second idle loop.
     for (;;)
         Scheduler::sleep_ms(1000);
 }

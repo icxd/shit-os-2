@@ -63,6 +63,12 @@ public:
 
     virtual ErrorOr<int> ioctl(u32 request, void* argument);
 
+    // Called when a FileDescription onto this inode is created and destroyed.
+    // Pipes use this to count their live ends: fork() shares a description
+    // rather than duplicating it, so a description is exactly one "end".
+    virtual void on_description_opened(int flags) { (void)flags; }
+    virtual void on_description_closed(int flags) { (void)flags; }
+
     // Whether a read would return immediately. Used by the TTY and by poll.
     virtual bool can_read_without_blocking() const { return true; }
 
