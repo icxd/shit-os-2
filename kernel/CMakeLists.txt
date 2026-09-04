@@ -6,7 +6,9 @@ set(KERNEL_SOURCES
     arch/x86_64/gdt.cpp
     arch/x86_64/idt.cpp
     arch/x86_64/isr.S
+    arch/x86_64/percpu.cpp
     arch/x86_64/pic.cpp
+    arch/x86_64/pit.cpp
     arch/x86_64/serial.cpp
     boot/boot_info.cpp
     dev/console.cpp
@@ -17,6 +19,9 @@ set(KERNEL_SOURCES
     mm/address_space.cpp
     mm/heap.cpp
     mm/physical.cpp
+    sched/scheduler.cpp
+    sched/thread.cpp
+    sched/waitqueue.cpp
     main.cpp
     panic.cpp
     selftest.cpp

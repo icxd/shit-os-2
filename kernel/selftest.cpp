@@ -9,7 +9,11 @@
 #include <kernel/mm/address_space.h>
 #include <kernel/mm/heap.h>
 #include <kernel/mm/physical.h>
+#include <kernel/arch/x86_64/percpu.h>
+#include <kernel/arch/x86_64/pit.h>
 #include <kernel/panic.h>
+#include <kernel/sched/scheduler.h>
+#include <kernel/sched/waitqueue.h>
 #include <kernel/selftest.h>
 
 extern "C" {
@@ -253,7 +257,123 @@ void test_formatting()
     check(needed == 10 && strlen(buffer) == 7, "snprintf truncates but reports the full length");
 }
 
+// --- scheduler ----------------------------------------------------------
+
+struct WorkerState {
+    u32 iterations_done;
+    bool finished;
+};
+
+WorkerState s_workers[3];
+
+void worker_thread(void* argument)
+{
+    auto* state = static_cast<WorkerState*>(argument);
+    for (u32 i = 0; i < 50; ++i) {
+        __atomic_add_fetch(&state->iterations_done, 1, __ATOMIC_RELAXED);
+        Scheduler::yield();
+    }
+    __atomic_store_n(&state->finished, true, __ATOMIC_RELEASE);
+}
+
+WaitQueue s_test_queue;
+bool s_waiter_woke = false;
+bool s_waiter_started = false;
+
+void waiter_thread(void*)
+{
+    __atomic_store_n(&s_waiter_started, true, __ATOMIC_RELEASE);
+    s_test_queue.wait();
+    __atomic_store_n(&s_waiter_woke, true, __ATOMIC_RELEASE);
+}
+
+void test_scheduler()
+{
+    check(Scheduler::is_running(), "the scheduler is running");
+    check(Scheduler::current() != nullptr, "there is a current thread");
+
+    u64 const switches_before = Scheduler::context_switches();
+
+    for (auto& state : s_workers)
+        state = { 0, false };
+
+    for (auto& state : s_workers) {
+        auto thread = Thread::create_kernel_thread("selftest-worker", worker_thread, &state);
+        check(!thread.is_error(), "creating a kernel thread");
+        if (!thread.is_error())
+            Scheduler::enqueue(thread.value());
+    }
+
+    // Give them room to run. If preemption is broken this loop never finishes
+    // and the watchdog in run-qemu.sh is what reports it.
+    for (u32 attempts = 0; attempts < 200; ++attempts) {
+        bool all_done = true;
+        for (auto& state : s_workers)
+            all_done &= __atomic_load_n(&state.finished, __ATOMIC_ACQUIRE);
+        if (all_done)
+            break;
+        Scheduler::sleep_ms(10);
+    }
+
+    bool all_finished = true;
+    bool all_complete = true;
+    for (auto& state : s_workers) {
+        all_finished &= __atomic_load_n(&state.finished, __ATOMIC_ACQUIRE);
+        all_complete &= __atomic_load_n(&state.iterations_done, __ATOMIC_RELAXED) == 50;
+    }
+    check(all_finished, "every worker thread ran to completion");
+    check(all_complete, "every worker thread completed all its iterations");
+    check(Scheduler::context_switches() > switches_before, "context switches happened");
+
+    // Sleeping should take about as long as asked. The tolerance is wide
+    // because the tick is 4 ms and an emulated machine is not precise.
+    u64 const before = arch::pit_uptime_ms();
+    Scheduler::sleep_ms(100);
+    u64 const elapsed = arch::pit_uptime_ms() - before;
+    check(elapsed >= 90 && elapsed <= 300, "sleep_ms sleeps roughly the requested time");
+
+    // A thread blocked on a wait queue must not run until it is woken.
+    s_waiter_woke = false;
+    s_waiter_started = false;
+    auto waiter = Thread::create_kernel_thread("selftest-waiter", waiter_thread, nullptr);
+    check(!waiter.is_error(), "creating the wait queue test thread");
+    if (!waiter.is_error()) {
+        Scheduler::enqueue(waiter.value());
+        while (!__atomic_load_n(&s_waiter_started, __ATOMIC_ACQUIRE))
+            Scheduler::sleep_ms(4);
+        Scheduler::sleep_ms(20);
+        check(!__atomic_load_n(&s_waiter_woke, __ATOMIC_ACQUIRE), "a blocked thread stays blocked");
+        check(s_test_queue.waiter_count() == 1, "the wait queue knows about its waiter");
+
+        s_test_queue.wake_all();
+        for (u32 attempts = 0; attempts < 100 && !__atomic_load_n(&s_waiter_woke, __ATOMIC_ACQUIRE); ++attempts)
+            Scheduler::sleep_ms(4);
+        check(__atomic_load_n(&s_waiter_woke, __ATOMIC_ACQUIRE), "waking a wait queue releases the waiter");
+    }
+
+    // Exited threads are reaped by the idle thread, so the count comes back
+    // down once the system has had a moment to breathe.
+    usize const count_before = Scheduler::thread_count();
+    Scheduler::sleep_ms(50);
+    check(Scheduler::thread_count() <= count_before, "finished threads get reaped");
+}
+
 } // namespace
+
+void run_scheduler_selftests()
+{
+    s_checks_run = 0;
+    s_checks_failed = 0;
+
+    test_scheduler();
+
+    if (s_checks_failed == 0) {
+        klog(LOG_INFO, "selftest", "%zu scheduler checks passed", s_checks_run);
+    } else {
+        klog(LOG_ERROR, "selftest", "%zu of %zu scheduler checks FAILED", s_checks_failed, s_checks_run);
+        panic("scheduler self tests failed");
+    }
+}
 
 void run_boot_selftests()
 {

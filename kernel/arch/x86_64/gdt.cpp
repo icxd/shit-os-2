@@ -76,6 +76,11 @@ void load_gdt(GdtPointer const& pointer)
 
     // The data selectors take effect on the next load; CS only changes via a
     // far transfer, which here is a far return to the label after the jump.
+    //
+    // Careful: writing %fs or %gs here resets that segment's base to zero, so
+    // anything that has stashed a base in FS_BASE or GS_BASE -- the per-CPU
+    // pointer, thread-local storage -- must be installed after this runs, not
+    // before.
     asm volatile(
         "movw %[data], %%ax\n"
         "movw %%ax, %%ds\n"

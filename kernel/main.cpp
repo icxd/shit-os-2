@@ -8,6 +8,8 @@
 #include <kernel/arch/x86_64/cpu.h>
 #include <kernel/arch/x86_64/gdt.h>
 #include <kernel/arch/x86_64/interrupts.h>
+#include <kernel/arch/x86_64/percpu.h>
+#include <kernel/arch/x86_64/pit.h>
 #include <kernel/arch/x86_64/io.h>
 #include <kernel/arch/x86_64/serial.h>
 #include <kernel/boot/boot_info.h>
@@ -18,6 +20,7 @@
 #include <kernel/mm/heap.h>
 #include <kernel/mm/physical.h>
 #include <kernel/panic.h>
+#include <kernel/sched/scheduler.h>
 #include <kernel/selftest.h>
 
 namespace kernel {
@@ -50,13 +53,16 @@ char const* memory_kind_name(boot::MemoryKind kind)
 void print_banner()
 {
     kprintf("\n");
-    kprintf("      _     _ _                 ___  \n");
-    kprintf("  ___| |__ (_) |_    ___  ___  |_  ) \n");
-    kprintf(" (_-<| '_ \\| |  _|  / _ \\/ _ \\  / /  \n");
-    kprintf(" /__/|_.__/|_|\\__|  \\___/\\___/ /___| \n");
+    kprintf("                                            #####\n");
+    kprintf("  ####  #    # # #####     ####   ####     #     #\n");
+    kprintf(" #      #    # #   #      #    # #               #\n");
+    kprintf("  ####  ###### #   #      #    #  ####      #####\n");
+    kprintf("      # #    # #   #      #    #      #    #\n");
+    kprintf(" #    # #    # #   #      #    # #    #    #\n");
+    kprintf("  ####  #    # #   #       ####   ####     #######\n");
     kprintf("\n");
-    kprintf(" a hybrid x86_64 kernel that is not based on Linux,\n");
-    kprintf(" and is not based on much else either.\n");
+    kprintf("  a hybrid x86_64 kernel. not based on Linux, and not\n");
+    kprintf("  based on much else either.\n");
     kprintf("\n");
 }
 
@@ -136,7 +142,13 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
 
     // Descriptor tables before memory: a fault during the memory bring-up is
     // exactly when a working IDT is worth the most.
+    //
+    // The per-CPU block has to be installed *after* the GDT, not before:
+    // loading a segment register in long mode resets that segment's base to
+    // zero, so gdt_initialize() writing %gs would wipe the GS base MSR that
+    // this_cpu() reads.
     arch::gdt_initialize();
+    arch::percpu_initialize_bootstrap();
     arch::idt_initialize();
 
     mm::physical_initialize(info);
@@ -149,7 +161,16 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
 
     run_boot_selftests();
 
-    klog(LOG_INFO, "boot", "stage B complete: descriptors, interrupts, memory");
+    arch::pit_initialize();
+    Scheduler::initialize();
+    run_scheduler_selftests();
 
-    arch::halt_forever();
+    klog(LOG_INFO, "boot", "stage C complete: timer, threads, preemptive scheduling");
+    klog(LOG_INFO, "boot", "uptime %llu ms, %zu threads, %llu context switches",
+        Scheduler::uptime_ms(), Scheduler::thread_count(), Scheduler::context_switches());
+
+    // Stage D onwards replaces this with mounting the filesystems and starting
+    // init. Until then, keep the machine alive so the timer keeps ticking.
+    for (;;)
+        Scheduler::sleep_ms(1000);
 }
