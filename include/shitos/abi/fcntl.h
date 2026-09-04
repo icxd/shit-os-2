@@ -16,6 +16,25 @@
 #define O_DIRECTORY 0x10000
 #define O_CLOEXEC 0x80000
 
+/* --- fcntl(2) ----------------------------------------------------------- */
+
+#define F_DUPFD 0
+#define F_GETFD 1
+#define F_SETFD 2
+#define F_GETFL 3
+#define F_SETFL 4
+#define F_DUPFD_CLOEXEC 1030
+
+/* The only descriptor flag there is. */
+#define FD_CLOEXEC 1
+
+/*
+ * The bits fcntl(F_SETFL) is allowed to change. Access mode and creation flags
+ * are fixed once the file is open; POSIX says the rest are silently ignored
+ * rather than an error.
+ */
+#define O_SETFL_MASK (O_APPEND | O_NONBLOCK)
+
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2

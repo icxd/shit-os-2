@@ -206,6 +206,19 @@ ErrorOr<int> Process::duplicate_descriptor(int fd, int to)
     return to;
 }
 
+ErrorOr<bool> Process::descriptor_close_on_exec(int fd) const
+{
+    TRY(description_for(fd));
+    return m_descriptors[fd].close_on_exec;
+}
+
+ErrorOr<void> Process::set_descriptor_close_on_exec(int fd, bool close_on_exec)
+{
+    TRY(description_for(fd));
+    m_descriptors[fd].close_on_exec = close_on_exec;
+    return {};
+}
+
 void Process::close_all_descriptors()
 {
     for (int fd = 0; fd < static_cast<int>(MAX_FILE_DESCRIPTORS); ++fd) {

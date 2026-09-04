@@ -30,11 +30,18 @@ public:
     ErrorOr<bool> read_directory(usize index, DirectoryEntry& out) override;
     ErrorOr<Inode*> create(char const* name, InodeType type, u32 mode) override;
     ErrorOr<void> unlink(char const* name) override;
+    ErrorOr<void> rename(char const* name, Inode& new_parent, char const* new_name) override;
 
 private:
     friend class TmpfsFileSystem;
 
     ErrorOr<void> ensure_capacity(usize wanted);
+
+    // Renaming inside one directory mutates the child vector twice, and an
+    // index found before the first mutation does not survive it -- so both of
+    // these work by identity or by name, never by a remembered index.
+    static bool remove_child(Vector<TmpfsInode*>& children, TmpfsInode* child);
+    static TmpfsInode* find_child(Vector<TmpfsInode*>& children, char const* name);
 
     char m_name[FILENAME_MAX_LENGTH] {};
     u8* m_data { nullptr };

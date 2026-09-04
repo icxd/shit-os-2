@@ -14,6 +14,11 @@ set(INITRD_PATH "${CMAKE_BINARY_DIR}/initrd.tar")
 # userland programs register themselves here as they are declared.
 get_property(SHITOS_IMAGE_TARGETS GLOBAL PROPERTY SHITOS_IMAGE_TARGETS)
 
+# The targets alone are not enough. A custom target has no location, so naming
+# one in DEPENDS orders the build without making the initrd stale when the file
+# it produces changes -- which shipped a module built before the last edit.
+get_property(SHITOS_IMAGE_FILES GLOBAL PROPERTY SHITOS_IMAGE_FILES)
+
 # Everything under rootfs/ is copied into the image verbatim, so touching any
 # of it has to repack. CONFIGURE_DEPENDS makes cmake re-glob when a file is
 # added rather than silently shipping a stale archive.
@@ -29,7 +34,7 @@ add_custom_command(
             "SHITOS_BUILD_DIR=${CMAKE_BINARY_DIR}"
             "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" "${INITRD_PATH}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tools/mkinitrd.sh" ${SHITOS_IMAGE_TARGETS}
-            ${SHITOS_ROOTFS_FILES}
+            ${SHITOS_IMAGE_FILES} ${SHITOS_ROOTFS_FILES}
     COMMENT "Packing initrd"
     VERBATIM
 )

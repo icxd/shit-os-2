@@ -56,6 +56,14 @@
 #define SYS_uname 30
 #define SYS_sched_yield 31
 #define SYS_isatty 32
+#define SYS_clock_gettime 33
+#define SYS_fcntl 34
+#define SYS_rename 35
+#define SYS_setpgid 36
+#define SYS_getpgid 37
+#define SYS_setsid 38
+#define SYS_getsid 39
+#define SYS_poll 40
 
 #define SYS_EXT_BASE 0x100
 
@@ -68,7 +76,7 @@
 /* Halt, reboot or power off the machine. */
 #define SYS_shitos_shutdown (SYS_EXT_BASE + 3)
 
-#define SYS_MAX_POSIX 33
+#define SYS_MAX_POSIX 41
 #define SYS_MAX_EXT 4
 
 /* --- SYS_shitos_sysinfo ------------------------------------------------- */

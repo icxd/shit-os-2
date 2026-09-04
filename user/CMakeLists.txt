@@ -66,6 +66,7 @@ function(add_shitos_program PROGRAM_NAME)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/user/bin"
     )
     set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_TARGETS ${PROGRAM_NAME})
+    set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_FILES "$<TARGET_FILE:${PROGRAM_NAME}>")
 endfunction()
 
 add_subdirectory(bin)

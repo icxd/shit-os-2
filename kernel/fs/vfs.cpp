@@ -8,6 +8,7 @@
 #include <kernel/lib/string.h>
 #include <kernel/mm/heap.h>
 #include <kernel/panic.h>
+#include <kernel/sys/clock.h>
 
 namespace kernel::fs {
 
@@ -114,6 +115,11 @@ ErrorOr<Inode*> Inode::create(char const*, InodeType, u32)
 {
     return Error::from_errno(EROFS);
 }
+ErrorOr<void> Inode::rename(char const*, Inode&, char const*)
+{
+    return Error::from_errno(ENOTSUP);
+}
+
 ErrorOr<void> Inode::unlink(char const*)
 {
     return Error::from_errno(EROFS);
@@ -138,6 +144,15 @@ void Inode::unref()
         destroy();
 }
 
+void Inode::touch()
+{
+    i64 const now = clock_realtime_seconds();
+    m_modify_time = now;
+    m_change_time = now;
+    if (m_access_time == 0)
+        m_access_time = now;
+}
+
 ErrorOr<void> Inode::stat(struct stat& out) const
 {
     memset(&out, 0, sizeof(out));
@@ -147,6 +162,9 @@ ErrorOr<void> Inode::stat(struct stat& out) const
     out.st_size = static_cast<i64>(size());
     out.st_blksize = static_cast<i64>(PAGE_SIZE);
     out.st_blocks = static_cast<i64>(div_round_up<u64>(size(), 512));
+    out.st_atime = m_access_time;
+    out.st_mtime = m_modify_time;
+    out.st_ctime = m_change_time;
     return {};
 }
 
@@ -439,6 +457,35 @@ ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* bas
         (void)description->seek(0, SEEK_END);
 
     return description;
+}
+
+ErrorOr<void> rename(char const* from, char const* to, Inode* base)
+{
+    char from_name[FILENAME_MAX_LENGTH];
+    char to_name[FILENAME_MAX_LENGTH];
+    auto* from_parent = TRY(resolve_parent(from, base, from_name));
+    auto* to_parent = TRY(resolve_parent(to, base, to_name));
+
+    if (from_parent->filesystem() != to_parent->filesystem())
+        return Error::from_errno(EXDEV);
+    if (from_parent->filesystem() != nullptr && from_parent->filesystem()->is_read_only())
+        return Error::from_errno(EROFS);
+
+    // "." and ".." are not names a caller may move, and renaming a directory
+    // into its own subtree would detach that subtree from the root.
+    if (strcmp(from_name, ".") == 0 || strcmp(from_name, "..") == 0 || strcmp(to_name, ".") == 0
+        || strcmp(to_name, "..") == 0)
+        return Error::from_errno(EINVAL);
+
+    auto* source = TRY(from_parent->lookup(from_name));
+    if (source->is_directory()) {
+        for (Inode* walk = to_parent; walk != nullptr; walk = walk->parent()) {
+            if (walk == source)
+                return Error::from_errno(EINVAL);
+        }
+    }
+
+    return from_parent->rename(from_name, *to_parent, to_name);
 }
 
 void release_description(FileDescription* description)

@@ -97,6 +97,13 @@ public:
     virtual ErrorOr<Inode*> create(char const* name, InodeType type, u32 mode);
     virtual ErrorOr<void> unlink(char const* name);
 
+    // Moves `name` out of this directory and into `new_parent` under
+    // `new_name`, atomically as far as any caller can tell. Both directories
+    // belong to the same filesystem -- fs::rename checks that and returns
+    // EXDEV otherwise, because moving between filesystems is a copy and POSIX
+    // says rename(2) never silently becomes one.
+    virtual ErrorOr<void> rename(char const* name, Inode& new_parent, char const* new_name);
+
     virtual ErrorOr<int> ioctl(u32 request, void* argument);
 
     // Called when a FileDescription onto this inode is created and destroyed.
@@ -130,6 +137,22 @@ protected:
     // For an inode that never had a name -- a pipe -- to start from zero.
     void drop_initial_link_reference() { m_reference_count = 0; }
 
+    // Stamps modification and change time with the current wall clock, and
+    // access time too on a fresh inode. A filesystem calls this when it
+    // changes content; the initrd never does, because a tar image's inodes are
+    // as old as the archive.
+    void touch();
+
+    // For a filesystem whose inodes carry their own timestamps -- an archive
+    // records when each file was packed -- rather than being stamped as they
+    // are written.
+    void set_times(i64 seconds)
+    {
+        m_access_time = seconds;
+        m_modify_time = seconds;
+        m_change_time = seconds;
+    }
+
     // Destroys and frees. Virtual so a filesystem that pools its inodes can
     // reclaim rather than free; the default suits everything allocated with
     // kzalloc, which is all of them today.
@@ -143,6 +166,9 @@ protected:
     // its open descriptions.
     u32 m_reference_count { 1 };
     bool m_unlinked { false };
+    i64 m_access_time { 0 };
+    i64 m_modify_time { 0 };
+    i64 m_change_time { 0 };
     InodeType m_type { InodeType::Regular };
     u32 m_mode { 0644 };
     u64 m_size { 0 };
@@ -211,6 +237,10 @@ ErrorOr<Inode*> resolve_parent(
     char const* path, Inode* base, char (&final_component)[FILENAME_MAX_LENGTH]);
 
 ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* base = nullptr);
+
+// Resolves both paths, checks they are on one filesystem, and hands the work
+// to the directory the source lives in.
+ErrorOr<void> rename(char const* from, char const* to, Inode* base = nullptr);
 
 // Drops one reference to a description. The last one closes the file, which
 // may in turn destroy the inode if the name has already been removed.

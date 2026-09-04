@@ -72,6 +72,7 @@ ErrorOr<usize> TmpfsInode::write(u64 offset, void const* buffer, usize length)
 
     memcpy(m_data + offset, buffer, length);
     m_size = max<u64>(m_size, offset + length);
+    touch();
     return length;
 }
 
@@ -85,6 +86,7 @@ ErrorOr<void> TmpfsInode::truncate(u64 size)
         memset(m_data + m_size, 0, static_cast<usize>(size - m_size));
     }
     m_size = size;
+    touch();
     return {};
 }
 
@@ -150,6 +152,9 @@ ErrorOr<Inode*> TmpfsInode::create(char const* name, InodeType type, u32 mode)
     strncpy(child->m_name, name, FILENAME_MAX_LENGTH - 1);
     child->m_parent = this;
     child->m_inode_number = static_cast<TmpfsFileSystem*>(m_filesystem)->allocate_inode_number();
+    child->touch();
+    // Adding an entry changes this directory too.
+    touch();
 
     if (auto result = m_children.append(child); result.is_error()) {
         child->unref();
@@ -184,6 +189,88 @@ ErrorOr<void> TmpfsInode::unlink(char const* name)
     }
 
     return Error::from_errno(ENOENT);
+}
+
+bool TmpfsInode::remove_child(Vector<TmpfsInode*>& children, TmpfsInode* child)
+{
+    for (usize i = 0; i < children.size(); ++i) {
+        if (children[i] == child) {
+            children.remove_at(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+TmpfsInode* TmpfsInode::find_child(Vector<TmpfsInode*>& children, char const* name)
+{
+    for (auto* child : children) {
+        if (strcmp(child->m_name, name) == 0)
+            return child;
+    }
+    return nullptr;
+}
+
+ErrorOr<void> TmpfsInode::rename(char const* name, Inode& new_parent, char const* new_name)
+{
+    if (m_type != InodeType::Directory || !new_parent.is_directory())
+        return Error::from_errno(ENOTDIR);
+    if (strlen(new_name) >= FILENAME_MAX_LENGTH)
+        return Error::from_errno(ENAMETOOLONG);
+
+    // fs::rename already established both sides are on this filesystem, so the
+    // cast is the same one lookup and create make.
+    auto& destination = static_cast<TmpfsInode&>(new_parent);
+
+    auto* source = find_child(m_children, name);
+    if (source == nullptr)
+        return Error::from_errno(ENOENT);
+
+    // Renaming a name onto itself is a no-op that must not destroy anything.
+    if (&destination == this && strcmp(name, new_name) == 0)
+        return {};
+
+    // A destination that already exists is replaced, but only by something
+    // compatible: POSIX will not let a file overwrite a directory or the
+    // reverse, and will not replace a directory that still has entries.
+    auto* replaced = find_child(destination.m_children, new_name);
+    if (replaced == source)
+        return {};
+    if (replaced != nullptr) {
+        if (replaced->is_directory() != source->is_directory())
+            return Error::from_errno(source->is_directory() ? ENOTDIR : EISDIR);
+        if (replaced->is_directory() && !replaced->m_children.is_empty())
+            return Error::from_errno(ENOTEMPTY);
+    }
+
+    // Everything that can fail has to fail before anything moves, or a half
+    // done rename loses the file. Reserving the destination slot is the only
+    // allocation left. It is unnecessary in the cases that free a slot first,
+    // and asking for it anyway costs one pointer and no reasoning.
+    TRY(destination.m_children.reserve(destination.m_children.size() + 1));
+
+    if (replaced != nullptr)
+        (void)remove_child(destination.m_children, replaced);
+    (void)remove_child(m_children, source);
+
+    strncpy(source->m_name, new_name, FILENAME_MAX_LENGTH - 1);
+    source->m_name[FILENAME_MAX_LENGTH - 1] = '\0';
+    source->m_parent = &destination;
+
+    // Cannot fail: the capacity was reserved above, and two entries just left.
+    (void)destination.m_children.append(source);
+
+    touch();
+    destination.touch();
+
+    // Only now, once the move cannot fail, does the replaced file lose its
+    // last name.
+    if (replaced != nullptr) {
+        replaced->mark_unlinked();
+        replaced->unref();
+    }
+
+    return {};
 }
 
 ErrorOr<TmpfsFileSystem*> TmpfsFileSystem::create()

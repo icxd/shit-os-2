@@ -324,3 +324,19 @@ int access(const char* path, int mode)
     (void)mode;
     return 0;
 }
+
+int fcntl(int fd, int command, ...)
+{
+    /*
+     * Every command this kernel implements takes at most one integer, so read
+     * one unconditionally. Reading an argument that was not passed is defined
+     * behaviour for va_arg only in the sense that the value is garbage -- and
+     * the commands that ignore it do exactly that.
+     */
+    va_list arguments;
+    va_start(arguments, command);
+    long const argument = (long)va_arg(arguments, int);
+    va_end(arguments);
+
+    return (int)__syscall_return(__syscall3(SYS_fcntl, fd, command, argument));
+}

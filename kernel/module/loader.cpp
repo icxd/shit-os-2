@@ -303,9 +303,14 @@ ErrorOr<LoadedModule*> ModuleLoader::load(char const* name, u8 const* image, usi
         return Error::from_errno(ENOEXEC);
     }
 
-    if (descriptor->abi_version != SHITOS_MODULE_ABI_VERSION) {
-        klog(LOG_ERROR, "module", "%s: built against ABI v%u, kernel speaks v%u", name,
-            descriptor->abi_version, SHITOS_MODULE_ABI_VERSION);
+    // The table only ever grows at the end, so a newer kernel can serve an
+    // older module: every entry that module knows about is still in place.
+    // The other direction would have it call through a pointer past the end of
+    // the struct, which is what the number is here to prevent.
+    if (descriptor->abi_version < SHITOS_MODULE_ABI_MIN_VERSION
+        || descriptor->abi_version > SHITOS_MODULE_ABI_VERSION) {
+        klog(LOG_ERROR, "module", "%s: built against ABI v%u, kernel speaks v%u..v%u", name,
+            descriptor->abi_version, SHITOS_MODULE_ABI_MIN_VERSION, SHITOS_MODULE_ABI_VERSION);
         mm::free_module_memory(base, total_size);
         return Error::from_errno(EABIVER);
     }

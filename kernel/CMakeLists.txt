@@ -37,6 +37,7 @@ set(KERNEL_SOURCES
     sched/waitqueue.cpp
     sys/elf_loader.cpp
     sys/fault.cpp
+    sys/clock.cpp
     sys/syscall.cpp
     sys/userland.cpp
     main.cpp

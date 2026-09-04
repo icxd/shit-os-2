@@ -24,6 +24,7 @@
 #include <kernel/panic.h>
 #include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
+#include <kernel/sys/clock.h>
 #include <kernel/sys/elf_loader.h>
 #include <kernel/sys/syscall.h>
 
@@ -32,6 +33,7 @@
 #include <shitos/abi/mman.h>
 #include <shitos/abi/signal.h>
 #include <shitos/abi/syscall.h>
+#include <shitos/abi/time.h>
 #include <shitos/abi/utsname.h>
 #include <shitos/abi/wait.h>
 
@@ -303,6 +305,11 @@ ErrorOr<u64> sys_open(InterruptFrame&, u64 path_pointer, u64 flags, u64 mode, u6
         return fd.error();
     }
 
+    // O_CLOEXEC is the whole reason the flag exists: marking it afterwards
+    // with fcntl leaves a window where a fork inherits the descriptor.
+    if ((flags & O_CLOEXEC) != 0)
+        (void)process->set_descriptor_close_on_exec(fd.value(), true);
+
     return static_cast<u64>(fd.value());
 }
 
@@ -335,12 +342,19 @@ ErrorOr<u64> sys_fork(InterruptFrame& frame, u64, u64, u64, u64, u64, u64)
 
     // Descriptors are shared, not copied: the child sees the parent's file
     // offsets move and vice versa, which is what POSIX specifies.
+    //
+    // FD_CLOEXEC is the exception. It belongs to the descriptor rather than the
+    // open file, and fork duplicates the descriptor -- so the flag comes with
+    // it. Only exec clears it, which is the point: the usual pattern is to set
+    // it, fork, and let exec do the closing.
     for (int fd = 0; fd < static_cast<int>(MAX_FILE_DESCRIPTORS); ++fd) {
         auto description = parent->description_for(fd);
         if (description.is_error())
             continue;
         description.value()->ref();
         (void)child->allocate_descriptor(description.value(), fd);
+        if (auto inherited = parent->descriptor_close_on_exec(fd); !inherited.is_error())
+            (void)child->set_descriptor_close_on_exec(fd, inherited.value());
     }
 
     auto thread = Thread::create_from_frame(parent->name(), frame);
@@ -852,6 +866,75 @@ ErrorOr<u64> sys_isatty(InterruptFrame&, u64 fd, u64, u64, u64, u64, u64)
     return static_cast<u64>(1);
 }
 
+ErrorOr<u64> sys_clock_gettime(InterruptFrame&, u64 clock_id, u64 pointer, u64, u64, u64, u64)
+{
+    u64 nanoseconds = 0;
+    switch (clock_id) {
+    case CLOCK_REALTIME: nanoseconds = clock_realtime_ns(); break;
+    case CLOCK_MONOTONIC: nanoseconds = clock_monotonic_ns(); break;
+    default: return Error::from_errno(EINVAL);
+    }
+
+    struct shitos_timespec value = {
+        .tv_sec = static_cast<i64>(nanoseconds / 1'000'000'000ull),
+        .tv_nsec = static_cast<i64>(nanoseconds % 1'000'000'000ull),
+    };
+    TRY(copy_to_user(pointer, &value, sizeof(value)));
+    return static_cast<u64>(0);
+}
+
+ErrorOr<u64> sys_fcntl(InterruptFrame&, u64 fd_argument, u64 command, u64 argument, u64, u64, u64)
+{
+    auto* process = Process::current();
+    int const fd = static_cast<int>(fd_argument);
+    auto* description = TRY(process->description_for(fd));
+
+    switch (command) {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC: {
+        int const lowest = static_cast<int>(argument);
+        if (lowest < 0)
+            return Error::from_errno(EINVAL);
+        int const duplicate = TRY(process->allocate_descriptor(description, lowest));
+        description->ref();
+        // Unlike dup(), F_DUPFD_CLOEXEC exists precisely so the new descriptor
+        // can be marked without a window where a fork could inherit it.
+        TRY(process->set_descriptor_close_on_exec(duplicate, command == F_DUPFD_CLOEXEC));
+        return static_cast<u64>(duplicate);
+    }
+
+    case F_GETFD:
+        return static_cast<u64>(TRY(process->descriptor_close_on_exec(fd)) ? FD_CLOEXEC : 0);
+
+    case F_SETFD:
+        TRY(process->set_descriptor_close_on_exec(fd, (argument & FD_CLOEXEC) != 0));
+        return static_cast<u64>(0);
+
+    case F_GETFL: return static_cast<u64>(static_cast<unsigned>(description->flags()));
+
+    case F_SETFL: {
+        // Access mode and creation flags are fixed at open time. POSIX says to
+        // ignore them here rather than fail, so mask down to what can change.
+        int const kept = description->flags() & ~O_SETFL_MASK;
+        description->set_flags(kept | (static_cast<int>(argument) & O_SETFL_MASK));
+        return static_cast<u64>(0);
+    }
+
+    default: return Error::from_errno(EINVAL);
+    }
+}
+
+ErrorOr<u64> sys_rename(InterruptFrame&, u64 from_pointer, u64 to_pointer, u64, u64, u64, u64)
+{
+    char from[fs::PATH_MAX_LENGTH];
+    char to[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(from, from_pointer, sizeof(from)));
+    TRY(copy_string_from_user(to, to_pointer, sizeof(to)));
+
+    TRY(fs::rename(from, to, Process::current()->working_directory()));
+    return static_cast<u64>(0);
+}
+
 // --- extensions ---------------------------------------------------------
 
 ErrorOr<u64> sys_shitos_sysinfo(InterruptFrame&, u64 pointer, u64, u64, u64, u64, u64)
@@ -1041,6 +1124,9 @@ SyscallHandler const POSIX_SYSCALLS[SYS_MAX_POSIX] = {
     [SYS_uname] = sys_uname,
     [SYS_sched_yield] = sys_sched_yield,
     [SYS_isatty] = sys_isatty,
+    [SYS_clock_gettime] = sys_clock_gettime,
+    [SYS_fcntl] = sys_fcntl,
+    [SYS_rename] = sys_rename,
 };
 
 #pragma clang diagnostic pop

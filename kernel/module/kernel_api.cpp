@@ -18,6 +18,7 @@
 #include <kernel/panic.h>
 #include <kernel/sched/scheduler.h>
 #include <kernel/sched/waitqueue.h>
+#include <kernel/sys/clock.h>
 
 namespace kernel {
 
@@ -170,6 +171,16 @@ void api_yield()
     Scheduler::yield();
 }
 
+ModuleResult api_time_source_register(i64 (*read)(void*), void* self)
+{
+    return clock_register_source(read, self) ? MODULE_OK : MODULE_ERR_BUSY;
+}
+
+void api_time_source_unregister(void* self)
+{
+    clock_unregister_source(self);
+}
+
 constinit KernelApi const s_kernel_api = {
     .abi_version = SHITOS_MODULE_ABI_VERSION,
     ._reserved = 0,
@@ -205,6 +216,9 @@ constinit KernelApi const s_kernel_api = {
     .sleep_ms = api_sleep_ms,
 
     .yield = api_yield,
+
+    .time_source_register = api_time_source_register,
+    .time_source_unregister = api_time_source_unregister,
 };
 
 } // namespace

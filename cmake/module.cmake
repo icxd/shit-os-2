@@ -27,7 +27,11 @@ function(add_shitos_module MODULE_NAME)
     add_custom_command(
         OUTPUT "${ko_path}"
         COMMAND "${SHITOS_LLD}" -r -o "${ko_path}" $<TARGET_OBJECTS:${objects_target}>
-        DEPENDS ${objects_target}
+        # Depend on the object files, not just the target that builds them.
+        # Naming the target alone makes ninja build the objects but judge the
+        # .ko up to date against nothing, so editing a driver -- or a header it
+        # uses -- silently ships the previous build.
+        DEPENDS $<TARGET_OBJECTS:${objects_target}> ${objects_target}
         COMMENT "Linking module ${MODULE_NAME}.ko"
         COMMAND_EXPAND_LISTS
         VERBATIM
@@ -35,4 +39,7 @@ function(add_shitos_module MODULE_NAME)
 
     add_custom_target(${MODULE_NAME} ALL DEPENDS "${ko_path}")
     set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_TARGETS ${MODULE_NAME})
+    # And the file, so the initrd repacks when the module changes rather than
+    # only when the list of modules does.
+    set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_FILES "${ko_path}")
 endfunction()

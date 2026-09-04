@@ -72,6 +72,12 @@ public:
     void close_on_exec_descriptors();
     usize open_descriptor_count() const;
 
+    // FD_CLOEXEC lives on the descriptor, not the description: dup() gives you
+    // a second descriptor onto the same open file, and only one of the two may
+    // be marked to close.
+    ErrorOr<bool> descriptor_close_on_exec(int fd) const;
+    ErrorOr<void> set_descriptor_close_on_exec(int fd, bool close_on_exec);
+
     // --- the break, for brk(2) ---
     u64 brk() const { return m_brk_current; }
     void set_brk_start(u64 address) { m_brk_start = m_brk_current = address; }

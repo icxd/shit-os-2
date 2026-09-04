@@ -2,43 +2,84 @@
 /*
  * shit os 2 libc -- time.
  *
- * Everything here is derived from the kernel's uptime, because there is no
- * real-time clock driver yet. Elapsed time is therefore correct and the
- * calendar date is not: the epoch is boot. Rather than invent a plausible
- * wrong year, gmtime lays the uptime out on 1 January 1970 so that a program
- * printing a date gets something obviously fake instead of something subtly
- * wrong.
+ * The calendar comes from the kernel, which gets it from whatever driver
+ * registered a time source; modules/rtc reads the CMOS once at boot and the
+ * kernel keeps the offset from its own monotonic clock. If nothing registered
+ * one the realtime clock reads as seconds since boot, which puts a printed
+ * date in 1970 -- obviously fake rather than subtly wrong.
+ *
+ * The two clocks answer different questions and this file keeps them apart.
+ * CLOCK_REALTIME is a date and can jump; CLOCK_MONOTONIC only counts forward
+ * from boot and is what an elapsed-time measurement wants.
  */
 
 #include "internal.h"
 
+#include <errno.h>
 #include <shitos.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
-static unsigned long long uptime_milliseconds(void)
+int clock_gettime(clockid_t clock_id, struct timespec* out)
 {
-    struct shitos_sysinfo info;
-    if (shitos_sysinfo(&info) < 0)
-        return 0;
-    return info.uptime_ms;
+    if (!out) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    struct shitos_timespec value;
+    if (__syscall_return(__syscall2(SYS_clock_gettime, clock_id, (long)&value)) < 0)
+        return -1;
+
+    out->tv_sec = (time_t)value.tv_sec;
+    out->tv_nsec = (long)value.tv_nsec;
+    return 0;
+}
+
+int gettimeofday(struct timeval* now, void* timezone_ignored)
+{
+    (void)timezone_ignored;
+    if (!now) {
+        errno = EFAULT;
+        return -1;
+    }
+
+    struct timespec value;
+    if (clock_gettime(CLOCK_REALTIME, &value) < 0)
+        return -1;
+
+    now->tv_sec = value.tv_sec;
+    now->tv_usec = value.tv_nsec / 1000;
+    return 0;
 }
 
 time_t time(time_t* out)
 {
-    time_t const now = (time_t)(uptime_milliseconds() / 1000);
+    struct timespec value;
+    if (clock_gettime(CLOCK_REALTIME, &value) < 0)
+        value.tv_sec = 0;
+
     if (out)
-        *out = now;
-    return now;
+        *out = value.tv_sec;
+    return value.tv_sec;
 }
 
 clock_t clock(void)
 {
-    /* CLOCKS_PER_SEC is a microsecond here, but the tick is 4 ms, so the low
-     * digits are always zero. The unit is right even though the resolution is
-     * not. */
-    return (clock_t)(uptime_milliseconds() * 1000);
+    /*
+     * Should be processor time charged to this process; there is no per-process
+     * accounting yet, so this is monotonic time since boot. That makes a
+     * difference of two clock() calls right -- which is what almost every
+     * caller wants -- and the absolute value wrong for anything but the first
+     * process. CLOCKS_PER_SEC is a microsecond and the tick is 4 ms, so the low
+     * digits are always zero: the unit is right, the resolution is not.
+     */
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) < 0)
+        return (clock_t)0;
+    return (clock_t)(value.tv_sec * 1000000L + value.tv_nsec / 1000);
 }
 
 double difftime(time_t later, time_t earlier)

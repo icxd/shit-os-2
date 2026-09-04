@@ -1063,10 +1063,5 @@ int remove(const char* path)
 
 int rename(const char* from, const char* to)
 {
-    (void)from;
-    (void)to;
-    /* No rename syscall exists yet, and emulating it with copy-then-unlink
-     * would be neither atomic nor correct for directories. */
-    errno = ENOSYS;
-    return -1;
+    return (int)__syscall_return(__syscall2(SYS_rename, (long)from, (long)to));
 }

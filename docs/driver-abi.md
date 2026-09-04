@@ -1,4 +1,4 @@
-# Driver ABI, version 1
+# Driver ABI, version 2
 
 A driver in shit os 2 is a `.ko`: an ordinary ELF64 relocatable object that the
 kernel loads at runtime. The whole contract is in
@@ -70,7 +70,7 @@ static const DeviceDescriptor THING = {
 
 static ModuleResult module_init(const KernelApi* kernel)
 {
-    if (kernel->abi_version != SHITOS_MODULE_ABI_VERSION)
+    if (kernel->abi_version < SHITOS_MODULE_ABI_VERSION)
         return MODULE_ERR_ABI_MISMATCH;
 
     g_kernel = kernel;
@@ -151,3 +151,35 @@ Bump `SHITOS_MODULE_ABI_VERSION` whenever anything in `api.h` changes shape:
 a new field, a reordered struct, a changed signature. Adding a function to
 `KernelApi` counts. Changing what a function is *implemented in terms of* does
 not — that is the entire point.
+
+**`KernelApi` only ever gains entries, at the end.** That single rule is what
+makes the version number useful rather than decorative: a kernel can serve any
+module built against a version at or below its own, because every entry that
+module knows about is still exactly where it expects it. The reverse cannot
+work, and the loader refuses it by number rather than letting a module call
+through a pointer past the end of the struct.
+
+So a module asks whether the kernel is new enough, not whether it matches:
+
+```c
+if (kernel->abi_version < SHITOS_MODULE_ABI_VERSION)
+    return MODULE_ERR_ABI_MISMATCH;
+```
+
+and must not touch an entry newer than the version it tested for.
+
+Reordering or removing an entry, or changing a signature, is a different kind
+of change: it breaks every existing module and needs `SHITOS_MODULE_ABI_MIN_VERSION`
+raised so the loader stops accepting them.
+
+### What version 2 added
+
+`time_source_register` and `time_source_unregister`, so a driver can hand the
+kernel a wall clock rather than only take services from it. `modules/rtc` reads
+the CMOS and registers one; the kernel reads it once, pins the difference
+against its own monotonic clock, and answers every later query from that
+offset. See `kernel/sys/clock.h`.
+
+Version 2 is also the first real test of the compatibility rule above — the
+PS/2 keyboard driver was written against version 1 and needed no change beyond
+relaxing its own check from `!=` to `<`.

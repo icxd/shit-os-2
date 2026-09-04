@@ -233,6 +233,11 @@ ErrorOr<void> UstarFileSystem::parse(u8 const* data, usize length)
 
         u64 const size = parse_octal(header->size, sizeof(header->size));
         u32 const mode = static_cast<u32>(parse_octal(header->mode, sizeof(header->mode)));
+        // The archive carries a real mtime, so an initrd file gets the date it
+        // was packed rather than the date the machine booted. mkinitrd builds
+        // reproducibly and stamps everything with zero, which reads as the
+        // epoch -- correct, and honest about being a build artefact.
+        auto const modified = static_cast<i64>(parse_octal(header->mtime, sizeof(header->mtime)));
 
         // tar paths from our mkinitrd start with "./"; strip it so the tree is
         // rooted where the mount expects.
@@ -245,7 +250,9 @@ ErrorOr<void> UstarFileSystem::parse(u8 const* data, usize length)
         if (clean_path[0] != '\0') {
             switch (header->type_flag) {
             case '5': {
-                TRY(ensure_path(clean_path, InodeType::Directory, mode != 0 ? mode : 0755));
+                auto* directory
+                    = TRY(ensure_path(clean_path, InodeType::Directory, mode != 0 ? mode : 0755));
+                directory->set_times(modified);
                 break;
             }
             case '0':
@@ -254,6 +261,7 @@ ErrorOr<void> UstarFileSystem::parse(u8 const* data, usize length)
                     = TRY(ensure_path(clean_path, InodeType::Regular, mode != 0 ? mode : 0644));
                 inode->m_data = data + offset;
                 inode->m_size = size;
+                inode->set_times(modified);
                 ++m_file_count;
                 m_total_bytes += size;
                 break;

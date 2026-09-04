@@ -62,6 +62,9 @@ the top bit set.
 | 30 | `uname` | `(struct utsname*)` | |
 | 31 | `sched_yield` | `()` | |
 | 32 | `isatty` | `(int fd)` | |
+| 33 | `clock_gettime` | `(clockid_t, struct timespec*)` | `CLOCK_REALTIME` and `CLOCK_MONOTONIC`. Realtime reads as boot time until a driver registers a clock. |
+| 34 | `fcntl` | `(int fd, int cmd, ...)` | `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`. |
+| 35 | `rename` | `(const char* from, const char* to)` | `EXDEV` across filesystems; replaces an existing file atomically. |
 
 ## Extensions
 
@@ -90,10 +93,8 @@ rather than by getting a plausible wrong answer:
 - `select` / `poll`. The `poll_readable` device op exists for it.
 - Users and permissions. Everything runs as uid 0 and mode bits are recorded
   but never checked.
-- `fcntl`, `readlink`, `symlink`, `link`, `chmod`, `chown`.
-- `rename`. libc declares it and returns `ENOSYS`; emulating it with
-  copy-then-unlink would be neither atomic nor correct for directories.
-- `clock_gettime` and anything else needing a wall clock; there is no RTC
-  driver, so uptime is all the kernel honestly knows.
+- `readlink`, `symlink`, `link`, `chmod`, `chown`.
+- `settimeofday` and `clock_settime`. The clock is read once at boot from
+  whatever driver offers one and never written.
 - Threads. One thread per process today, though the Thread/Process split is
   real.

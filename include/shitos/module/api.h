@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
- * shit os 2 -- loadable module ABI, version 1.
+ * shit os 2 -- loadable module ABI, version 2.
  *
  * A module is an ordinary ELF64 relocatable object (a .ko) that the kernel
  * loads at runtime. The important property of this ABI is what it does *not*
@@ -35,10 +35,26 @@ extern "C" {
 #endif
 
 /*
- * Bump this whenever anything below changes shape. Modules built against an
- * older value are refused by the loader rather than loaded and trusted.
+ * Bump this whenever anything below changes shape.
+ *
+ * The compatibility rule is one-directional and follows from the one rule this
+ * header holds itself to: KernelApi only ever gains entries, at the end. A
+ * kernel can therefore serve any module built against a version at or below
+ * its own -- the entries that module knows about are all still where it
+ * expects them. The reverse is not true, and the loader refuses it by number
+ * rather than letting the module call through a pointer that is not there.
+ *
+ * A module checks the kernel is new enough, not that it matches exactly:
+ *
+ *   if (kernel->abi_version < SHITOS_MODULE_ABI_VERSION)
+ *       return MODULE_ERR_ABI_MISMATCH;
+ *
+ * and must not touch an entry newer than the version it tested for.
  */
-#define SHITOS_MODULE_ABI_VERSION 1
+#define SHITOS_MODULE_ABI_VERSION 2
+
+/* The oldest module the loader will still accept. */
+#define SHITOS_MODULE_ABI_MIN_VERSION 1
 
 /* --- results ------------------------------------------------------------ */
 
@@ -146,12 +162,30 @@ typedef struct KernelApi {
 
     /* Cooperative yield, for drivers polling something slow. */
     void (*yield)(void);
+
+    /* --- added in ABI version 2 ----------------------------------------- */
+
+    /*
+     * Offer the kernel a wall clock. `read` returns seconds since the Unix
+     * epoch, or a negative value if the hardware could not be read.
+     *
+     * The kernel reads the source once, at registration, and pins the
+     * difference against its own monotonic uptime; every later query is
+     * answered from that offset. So a driver is free to take its time
+     * answering -- reading the CMOS means waiting out an update cycle -- and
+     * a source that disappears does not stop the clock.
+     *
+     * Only one source is used: the first to register wins, and a second gets
+     * MODULE_ERR_BUSY. Available only when abi_version >= 2.
+     */
+    ModuleResult (*time_source_register)(i64 (*read)(void* self), void* self);
+    void (*time_source_unregister)(void* self);
 } KernelApi;
 
 /* --- the module descriptor ---------------------------------------------- */
 
 typedef struct ModuleDescriptor {
-    u32 abi_version; /* must equal SHITOS_MODULE_ABI_VERSION */
+    u32 abi_version; /* the version built against; the kernel's must be >= it */
     u32 _reserved;
     const char* name;
     const char* description;

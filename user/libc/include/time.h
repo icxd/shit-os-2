@@ -2,20 +2,25 @@
 /*
  * shit os 2 libc -- time.
  *
- * There is no real-time clock driver yet, so the epoch this reports is boot,
- * not 1970. time() returns seconds since the machine started. That is a lie
- * about the date and an honest answer about elapsed time, which is the half
- * that programs mostly use it for -- but a file's timestamp or a date printed
- * by a script will be wrong until a CMOS RTC module exists. See
- * docs/roadmap.md.
+ * The kernel gets its calendar from whatever driver registers a time source --
+ * modules/rtc reads the CMOS at boot -- so time() is a real date. If nothing
+ * registered one, the clock reads as seconds since boot instead of inventing a
+ * plausible wrong year, and a date printed then is obviously 1970 rather than
+ * subtly off.
+ *
+ * There is no timezone database, so local time is UTC.
  */
 
 #ifndef _TIME_H
 #define _TIME_H
 
+#include <shitos/abi/time.h>
+
 #include <sys/types.h>
 
 #define CLOCKS_PER_SEC 1000000L
+
+typedef int clockid_t;
 
 struct timespec {
     time_t tv_sec;
@@ -35,6 +40,8 @@ struct tm {
 };
 
 int nanosleep(const struct timespec* request, struct timespec* remaining);
+
+int clock_gettime(clockid_t clock_id, struct timespec* out);
 
 time_t time(time_t* out);
 clock_t clock(void);

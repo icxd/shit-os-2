@@ -247,7 +247,9 @@ static const DeviceDescriptor KEYBOARD_DEVICE = {
 
 static ModuleResult module_init(const KernelApi* kernel)
 {
-    if (kernel->abi_version != SHITOS_MODULE_ABI_VERSION)
+    /* Newer is fine: the ABI only ever appends, so everything this driver
+     * knows about is still where it expects. Older is not. */
+    if (kernel->abi_version < SHITOS_MODULE_ABI_VERSION)
         return MODULE_ERR_ABI_MISMATCH;
 
     g_keyboard.kernel = kernel;

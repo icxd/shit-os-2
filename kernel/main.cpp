@@ -28,6 +28,7 @@
 #include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
 #include <kernel/selftest.h>
+#include <kernel/sys/clock.h>
 #include <kernel/sys/syscall.h>
 #include <kernel/sys/userland.h>
 
@@ -162,6 +163,7 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
     run_boot_selftests();
 
     arch::pit_initialize();
+    clock_initialize();
     Scheduler::initialize();
     run_scheduler_selftests();
 

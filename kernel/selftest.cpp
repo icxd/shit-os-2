@@ -21,6 +21,7 @@
 #include <kernel/sched/scheduler.h>
 #include <kernel/sched/waitqueue.h>
 #include <kernel/selftest.h>
+#include <kernel/sys/clock.h>
 
 #include <shitos/abi/ioctl.h>
 #include <shitos/abi/termios.h>
@@ -676,6 +677,96 @@ void test_inode_lifetime()
     }
 }
 
+void test_rename()
+{
+    // Everything here is on tmpfs, which is the only writable filesystem.
+    auto* tmp = fs::resolve("/tmp").value();
+
+    auto source = fs::open("/tmp/rename-a.txt", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(!source.is_error(), "creating a file to rename");
+    if (source.is_error())
+        return;
+    check(!source.value()->write("first", 5).is_error(), "writing to it");
+    auto* inode = &source.value()->inode();
+    fs::release_description(source.value());
+
+    check(!fs::rename("/tmp/rename-a.txt", "/tmp/rename-b.txt").is_error(), "renaming a file");
+    check(fs::resolve("/tmp/rename-a.txt").is_error(), "the old name is gone");
+    auto renamed = fs::resolve("/tmp/rename-b.txt");
+    check(!renamed.is_error(), "the new name resolves");
+    check(!renamed.is_error() && renamed.value() == inode, "and to the same inode, not a copy");
+
+    // Renaming onto an existing file replaces it silently, which is the
+    // property that makes write-to-temp-then-rename an atomic update.
+    auto victim = fs::open("/tmp/rename-c.txt", O_RDWR | O_CREAT, 0644);
+    check(!victim.is_error(), "creating a file to be replaced");
+    if (!victim.is_error()) {
+        check(!victim.value()->write("second", 6).is_error(), "writing to the victim");
+        fs::release_description(victim.value());
+        check(!fs::rename("/tmp/rename-b.txt", "/tmp/rename-c.txt").is_error(),
+            "renaming over an existing file");
+        auto survivor = fs::resolve("/tmp/rename-c.txt");
+        check(!survivor.is_error() && survivor.value() == inode, "the source won");
+
+        char buffer[16] = {};
+        auto reopened = fs::open("/tmp/rename-c.txt", O_RDONLY, 0);
+        if (!reopened.is_error()) {
+            auto read = reopened.value()->read(buffer, sizeof(buffer) - 1);
+            check(!read.is_error() && strcmp(buffer, "first") == 0,
+                "and kept its own contents, not the replaced file's");
+            fs::release_description(reopened.value());
+        }
+    }
+
+    // A directory and a file are not interchangeable, in either direction.
+    check(!tmp->create("rename-dir", fs::InodeType::Directory, 0755).is_error(),
+        "creating a directory to rename");
+    auto onto_file = fs::rename("/tmp/rename-dir", "/tmp/rename-c.txt");
+    check(onto_file.is_error() && onto_file.error().code() == ENOTDIR,
+        "a directory will not replace a file");
+    auto onto_directory = fs::rename("/tmp/rename-c.txt", "/tmp/rename-dir");
+    check(onto_directory.is_error() && onto_directory.error().code() == EISDIR,
+        "a file will not replace a directory");
+
+    // Moving a directory into its own subtree would detach it from the root.
+    auto* directory = fs::resolve("/tmp/rename-dir").value();
+    check(!directory->create("inner", fs::InodeType::Directory, 0755).is_error(),
+        "creating a nested directory");
+    auto into_self = fs::rename("/tmp/rename-dir", "/tmp/rename-dir/inner/moved");
+    check(into_self.is_error() && into_self.error().code() == EINVAL,
+        "a directory will not move inside itself");
+
+    // Across filesystems rename is a copy, and POSIX says it must not silently
+    // become one.
+    auto cross = fs::rename("/tmp/rename-c.txt", "/dev/rename-c.txt");
+    check(
+        cross.is_error() && cross.error().code() == EXDEV, "renaming across filesystems is EXDEV");
+
+    // Renaming a name onto itself changes nothing and must not destroy it.
+    check(!fs::rename("/tmp/rename-c.txt", "/tmp/rename-c.txt").is_error(),
+        "renaming a file onto itself succeeds");
+    check(!fs::resolve("/tmp/rename-c.txt").is_error(), "and the file is still there");
+
+    (void)directory->unlink("inner");
+    (void)tmp->unlink("rename-dir");
+    (void)tmp->unlink("rename-c.txt");
+}
+
+void test_clock()
+{
+    u64 const first = clock_monotonic_ns();
+    // A busy loop long enough that the 4 ms tick has certainly advanced.
+    arch::pit_busy_wait_ms(10);
+    u64 const second = clock_monotonic_ns();
+    check(second > first, "the monotonic clock advances");
+
+    // Real time is either a genuine date or, with no driver registered yet,
+    // the monotonic clock. Modules load after this runs, so it is the latter.
+    check(clock_realtime_ns() >= clock_monotonic_ns(),
+        "real time is never behind the monotonic clock");
+    check(!clock_realtime_is_set(), "no time source has registered before modules load");
+}
+
 void test_devfs()
 {
     auto zero = fs::open("/dev/zero", O_RDONLY, 0);
@@ -859,6 +950,8 @@ void run_filesystem_selftests()
     test_vfs();
     test_tmpfs();
     test_inode_lifetime();
+    test_rename();
+    test_clock();
     test_devfs();
 
     if (s_checks_failed == 0) {
