@@ -56,7 +56,11 @@ function(add_shitos_program PROGRAM_NAME)
     cmake_parse_arguments(ARG "" "" "SOURCES;LIBRARIES" ${ARGN})
 
     add_executable(${PROGRAM_NAME} ${ARG_SOURCES})
-    target_link_libraries(${PROGRAM_NAME} PRIVATE shitos_libc shitos_user_flags ${ARG_LIBRARIES})
+    # Libraries first, libc last. Everything here depends on the libc and
+    # nothing in the libc depends on them, so that is the order a single-pass
+    # linker needs -- and CMake's own dependency ordering then repeats the libc
+    # after anything that pulls it in.
+    target_link_libraries(${PROGRAM_NAME} PRIVATE ${ARG_LIBRARIES} shitos_libc shitos_user_flags)
     target_link_options(${PROGRAM_NAME} PRIVATE
         -nostdlib
         -static
