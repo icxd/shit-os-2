@@ -41,7 +41,7 @@ the top bit set.
 | 9 | `getpid` | `()` | |
 | 10 | `getppid` | `()` | Orphans are reparented to pid 1. |
 | 11 | `brk` | `(void* address)` | `brk(0)` reports the current break. |
-| 12 | `mmap` | `(addr, len, prot, flags, fd, off)` | `MAP_ANONYMOUS` only. |
+| 12 | `mmap` | `(addr, len, prot, flags, fd, off)` | Anonymous, `MAP_SHARED` and `MAP_PRIVATE`. A shared mapping of a file points at the inode's own pages, so it is shared memory and survives fork as one; a private one is an eager copy. Only tmpfs and `/dev/fb0` can back a mapping -- everything else is `ENODEV`. |
 | 13 | `munmap` | `(void* address, size_t length)` | Address space is not reclaimed. |
 | 14 | `dup` | `(int fd)` | Lowest free descriptor. |
 | 15 | `dup2` | `(int fd, int to)` | |

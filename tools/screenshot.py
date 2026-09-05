@@ -58,7 +58,13 @@ with tempfile.TemporaryDirectory() as tmp:
             sys.exit(1)
 
         if output.endswith(".png"):
-            for converter in (["magick", ppm, output], ["convert", ppm, output],
+            # ppm2png.py is ours and has no dependencies, so it is tried
+            # first: a machine with neither ImageMagick nor netpbm installed
+            # is the common case, and silently writing a .ppm instead of the
+            # .png that was asked for is a surprise nobody needs.
+            own = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppm2png.py")
+            for converter in ([sys.executable, own, ppm, output],
+                              ["magick", ppm, output], ["convert", ppm, output],
                               ["pnmtopng", ppm]):
                 try:
                     if converter[0] == "pnmtopng":

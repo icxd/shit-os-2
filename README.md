@@ -28,12 +28,13 @@ It is still not useful. It is now genuinely an operating system.
 | **Memory** | Bitmap physical allocator, 4-level paging, W^X kernel image, 4 GiB direct map, MMIO and module windows, slab-backed kernel heap |
 | **Scheduling** | Preemptive round-robin at 250 Hz, per-CPU run queue behind a `gs` accessor, wait queues, sleeping, zombie reaping |
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
-| **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard and CMOS clock drivers, written in C |
+| **Graphics** | `/dev/fb0` mapped straight into a process, `/dev/mouse0`, `/dev/kbdraw` with press and release events |
+| **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard, PS/2 mouse and CMOS clock drivers, written in C |
 | **Userland** | Ring 3, 50 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, the `at` family, job control with process groups and sessions, a TTY with canonical line discipline |
 | **libc** | Our own: stdio, an allocator that is not linear in the heap, a libm checked in ULPs, and a POSIX regex engine |
 | **Programs** | 103 in `/bin`. Ours are `init` `sh` `ps` `free` `lsmod` `stty`; the coreutils come from sbase |
 | **Ports** | **Lua 5.4**, **dash** and **sbase**, all unpatched, built against our libc |
-| **Tests** | 198 assertions in the kernel at every boot, 309 more from ring 3 run by `/etc/rc` before the shell, and three host-side differential checks against glibc |
+| **Tests** | 220 assertions in the kernel at every boot, 343 more from ring 3 run by `/etc/rc` before the shell, and three host-side differential checks against glibc |
 
 The shell has builtins, `PATH` lookup, pipelines, `<` `>` `>>` redirection and
 quoting. `^C` interrupts the foreground command. A null dereference in a

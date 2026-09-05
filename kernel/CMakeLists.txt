@@ -14,6 +14,7 @@ set(KERNEL_SOURCES
     arch/x86_64/syscall_entry.S
     boot/boot_info.cpp
     dev/console.cpp
+    dev/fbdev.cpp
     dev/framebuffer.cpp
     dev/tty.cpp
     fs/boot_mounts.cpp

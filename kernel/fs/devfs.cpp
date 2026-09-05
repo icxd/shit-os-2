@@ -2,6 +2,7 @@
 // shit os 2 -- /dev.
 
 #include <kernel/dev/console.h>
+#include <kernel/dev/fbdev.h>
 #include <kernel/fs/devfs.h>
 #include <kernel/lib/new.h>
 #include <kernel/lib/string.h>
@@ -86,6 +87,47 @@ bool DevfsInode::can_read_without_blocking() const
     return m_ops->poll_readable(m_device_self);
 }
 
+/*
+ * Device memory is a fixed physical range, so the page for an offset is
+ * arithmetic rather than a lookup, and `for_write` means nothing: the memory
+ * is already there and its permissions came from the mapping.
+ */
+/*
+ * The framebuffer is the one device where letting go matters: a compositor
+ * that takes the screen and then dies would otherwise leave the console
+ * suspended and the machine looking hung.
+ *
+ * It is the *last* descriptor that gives the screen back, not any descriptor,
+ * which is why this counts them rather than acting on each close. A process
+ * that opens /dev/fb0 a second time and closes it again is not done with the
+ * screen.
+ */
+void DevfsInode::on_description_opened(int)
+{
+    if (strcmp(m_name, "fb0") == 0)
+        ++m_open_descriptions;
+}
+
+void DevfsInode::on_description_closed(int)
+{
+    if (strcmp(m_name, "fb0") != 0)
+        return;
+    if (m_open_descriptions > 0 && --m_open_descriptions == 0)
+        dev::framebuffer_device_release();
+}
+
+ErrorOr<PhysAddr> DevfsInode::physical_page(u64 offset, bool)
+{
+    if (is_unlinked())
+        return Error::from_errno(ENODEV);
+    if (m_memory_length == 0)
+        return Error::from_errno(ENODEV);
+    if (offset >= m_memory_length)
+        return Error::from_errno(ENXIO);
+
+    return m_memory_base + align_down<u64>(offset, PAGE_SIZE);
+}
+
 ErrorOr<Inode*> DevfsInode::lookup(char const* name)
 {
     if (m_type != InodeType::Directory)
@@ -160,6 +202,12 @@ ErrorOr<DevfsFileSystem*> DevfsFileSystem::create()
 
 ErrorOr<void> DevfsFileSystem::register_device(DeviceDescriptor const& device)
 {
+    return register_memory_device(device, PhysAddr(0), 0);
+}
+
+ErrorOr<void> DevfsFileSystem::register_memory_device(
+    DeviceDescriptor const& device, PhysAddr memory_base, u64 memory_length)
+{
     if (device.name == nullptr || device.ops == nullptr)
         return Error::from_errno(EINVAL);
     if (strlen(device.name) >= FILENAME_MAX_LENGTH)
@@ -184,6 +232,8 @@ ErrorOr<void> DevfsFileSystem::register_device(DeviceDescriptor const& device)
     node->m_device = device;
     node->m_ops = device.ops;
     node->m_device_self = device.self;
+    node->m_memory_base = memory_base;
+    node->m_memory_length = memory_length;
 
     if (auto result = m_root->m_children.append(node); result.is_error()) {
         node->unref();

@@ -50,6 +50,19 @@ public:
     void clear();
     void set_colors(Rgb foreground, Rgb background);
 
+    /*
+     * While the screen belongs to a userland compositor the console stops
+     * drawing, so a stray klog does not scribble across somebody's windows.
+     * Serial still receives everything, so nothing is lost -- and on release
+     * the console redraws itself, which is what makes a compositor that
+     * crashes leave a usable terminal behind.
+     */
+    void suspend();
+    void resume();
+    bool is_suspended() const { return m_suspended; }
+
+    boot::FramebufferInfo const& info() const { return m_info; }
+
     u32 columns() const { return m_columns; }
     u32 rows() const { return m_rows; }
     bool is_usable() const { return m_format != boot::FramebufferFormat::None; }
@@ -66,6 +79,8 @@ private:
     void newline();
     void advance_cursor();
 
+    boot::FramebufferInfo m_info {};
+    bool m_suspended { false };
     boot::FramebufferFormat m_format { boot::FramebufferFormat::None };
     u8* m_pixels { nullptr };
     u32 m_pitch { 0 };

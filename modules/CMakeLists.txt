@@ -7,3 +7,4 @@ include("${CMAKE_SOURCE_DIR}/cmake/module.cmake")
 
 add_shitos_module(ps2kbd SOURCES ps2kbd/ps2kbd.c)
 add_shitos_module(rtc SOURCES rtc/rtc.c)
+add_shitos_module(ps2mouse SOURCES ps2mouse/ps2mouse.c)

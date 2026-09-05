@@ -44,6 +44,14 @@ What exists, what is next, and what is deliberately not being done yet.
   `/etc/rc` before the shell, and three host-side differential checks against
   glibc -- libm accuracy in ULPs, the allocator, and the regex engine.
 
+- **Graphics, from the bottom up.** `/dev/fb0` hands a process the real
+  framebuffer through `mmap` rather than a copy of it; a PS/2 mouse driver is
+  the third loadable module and needed no ABI additions at all, which is the
+  first real evidence that ABI was designed rather than guessed; and
+  `/dev/kbdraw` carries key *press and release* with modifiers, which is
+  everything the TTY's character stream throws away. `gfxtest --check` proves
+  all of it from ring 3 at every boot.
+
 ## Next
 
 Roughly in the order that each one unblocks the most.
@@ -177,8 +185,11 @@ check would have gone.
 - Userspace drivers. The module ABI was designed so a driver can move behind
   IPC without being rewritten; nothing has actually made that move yet.
 - Networking. A long way out.
-- A compositor. The framebuffer console is a text console on a linear
-  framebuffer, chosen over VGA text mode precisely so this stays possible.
+- The rest of the desktop: a compositor, a widget toolkit, a terminal
+  emulator. The kernel side of it is done -- shared memory, the framebuffer,
+  and both input devices. What is missing above that is named FIFOs for the
+  client-server channel, a TrueType rasteriser so text does not look like
+  1985, and pseudo-terminals so a shell can live in a window.
 
 ## Not planned
 

@@ -23,5 +23,7 @@ add_shitos_program(lsmod SOURCES lsmod.c)
 
 add_shitos_program(stty SOURCES stty.c)
 
-# Not a utility: the POSIX surface checked from ring 3, run at boot by /etc/rc.
+# Not utilities either: the POSIX surface and the graphics path, both checked
+# from ring 3 and both run at boot by /etc/rc.
 add_shitos_program(usertest SOURCES usertest.c)
+add_shitos_program(gfxtest SOURCES gfxtest.c)

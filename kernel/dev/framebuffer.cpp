@@ -21,6 +21,7 @@ constexpr u8 EGA_ATTRIBUTE = 0x07; // light grey on black
 
 bool FramebufferConsole::initialize(boot::FramebufferInfo const& info)
 {
+    m_info = info;
     m_format = info.format;
     if (m_format == boot::FramebufferFormat::None)
         return false;
@@ -292,6 +293,11 @@ void FramebufferConsole::advance_cursor()
 
 void FramebufferConsole::write_char(char c)
 {
+    // Suspended means a compositor owns the screen. Serial still has this
+    // line, so dropping it here loses nothing a developer needs.
+    if (m_suspended)
+        return;
+
     if (m_format == boot::FramebufferFormat::None)
         return;
 
@@ -327,6 +333,25 @@ void FramebufferConsole::write_char(char c)
         put_glyph(c, m_cursor_column, m_cursor_row);
     }
     advance_cursor();
+}
+
+void FramebufferConsole::suspend()
+{
+    m_suspended = true;
+}
+
+void FramebufferConsole::resume()
+{
+    if (!m_suspended)
+        return;
+    m_suspended = false;
+
+    // Whatever was on the screen belonged to the process that just let go of
+    // it. Start from a clean console rather than leaving its last frame up
+    // with a prompt drawn into the middle of it.
+    clear();
+    m_cursor_column = 0;
+    m_cursor_row = 0;
 }
 
 FramebufferConsole& framebuffer_console()

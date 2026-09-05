@@ -11,6 +11,7 @@
  * one and the loader will refuse the module by name.
  */
 
+#include <shitos/abi/input.h>
 #include <shitos/module/api.h>
 #include <shitos/types.h>
 
@@ -24,6 +25,7 @@
 #define SCANCODE_EXTENDED 0xE0
 
 #define BUFFER_SIZE 256
+#define EVENT_CAPACITY 128
 
 /*
  * Scancode set 1, US layout, indexed by make code. The row structure is
@@ -85,8 +87,22 @@ struct Ps2Keyboard {
     volatile unsigned head;
     volatile unsigned tail;
 
+    /*
+     * The same keystrokes, undigested, for whoever wants them that way. A
+     * terminal wants 'a' and ^C; a window manager needs to know which key went
+     * down, which came up, and what was held at the time -- none of which
+     * survives being turned into a character. So both streams exist, fed from
+     * this one interrupt, and neither knows about the other.
+     */
+    WaitQueue* event_readers;
+    struct key_event events[EVENT_CAPACITY];
+    volatile unsigned event_head;
+    volatile unsigned event_tail;
+    unsigned long events_dropped;
+
     bool shift_held;
     bool control_held;
+    bool alt_held;
     bool caps_lock;
     bool expecting_extended;
 
@@ -121,6 +137,34 @@ static bool buffer_pop(struct Ps2Keyboard* keyboard, char* out)
     *out = keyboard->buffer[keyboard->tail];
     keyboard->tail = (keyboard->tail + 1) % BUFFER_SIZE;
     return true;
+}
+
+static void push_event(struct Ps2Keyboard* keyboard, u16 keycode, bool pressed, u32 codepoint)
+{
+    unsigned next = (keyboard->event_head + 1) % EVENT_CAPACITY;
+    if (next == keyboard->event_tail) {
+        ++keyboard->events_dropped;
+        return;
+    }
+
+    u8 modifiers = 0;
+    if (keyboard->shift_held)
+        modifiers |= KEY_MODIFIER_SHIFT;
+    if (keyboard->control_held)
+        modifiers |= KEY_MODIFIER_CONTROL;
+    if (keyboard->alt_held)
+        modifiers |= KEY_MODIFIER_ALT;
+    if (keyboard->caps_lock)
+        modifiers |= KEY_MODIFIER_CAPS_LOCK;
+
+    struct key_event* event = &keyboard->events[keyboard->event_head];
+    event->keycode = keycode;
+    event->pressed = pressed ? 1 : 0;
+    event->modifiers = modifiers;
+    event->codepoint = codepoint;
+
+    keyboard->event_head = next;
+    keyboard->kernel->waitqueue_wake_all(keyboard->event_readers);
 }
 
 static char translate(struct Ps2Keyboard* keyboard, u8 scancode)
@@ -167,28 +211,55 @@ static bool keyboard_irq(void* self, u8 irq)
     u8 code = (u8)(scancode & 0x7F);
 
     if (keyboard->expecting_extended) {
-        /* Arrow keys, right control and so on. Not translated yet; the TTY
-         * gains escape sequences in a later stage. */
+        /* Arrow keys, right control and so on. The TTY still has no escape
+         * sequences for these, but a GUI wants them, so they reach the event
+         * stream with their codes lifted clear of the keypad's. */
         keyboard->expecting_extended = false;
+
+        switch (code) {
+        case KEY_LEFT_CONTROL: keyboard->control_held = !released; break;
+        case KEY_LEFT_ALT: keyboard->alt_held = !released; break;
+        default: break;
+        }
+
+        push_event(keyboard, (u16)(KEY_EXTENDED_BASE + code), !released, 0);
         return true;
     }
 
     switch (code) {
     case KEY_LEFT_SHIFT:
-    case KEY_RIGHT_SHIFT: keyboard->shift_held = !released; return true;
-    case KEY_LEFT_CONTROL: keyboard->control_held = !released; return true;
+    case KEY_RIGHT_SHIFT:
+        keyboard->shift_held = !released;
+        push_event(keyboard, code, !released, 0);
+        return true;
+    case KEY_LEFT_CONTROL:
+        keyboard->control_held = !released;
+        push_event(keyboard, code, !released, 0);
+        return true;
     case KEY_CAPS_LOCK:
         if (!released)
             keyboard->caps_lock = !keyboard->caps_lock;
+        push_event(keyboard, code, !released, 0);
         return true;
-    case KEY_LEFT_ALT: return true;
+    case KEY_LEFT_ALT:
+        keyboard->alt_held = !released;
+        push_event(keyboard, code, !released, 0);
+        return true;
     default: break;
     }
+
+    char c = translate(keyboard, code);
+
+    /*
+     * The event stream gets the release too, which is the whole point of it.
+     * The codepoint is only meaningful going down, and reporting it on the way
+     * up would tempt a client into typing the character twice.
+     */
+    push_event(keyboard, code, !released, released ? 0u : (u32)(unsigned char)c);
 
     if (released)
         return true;
 
-    char c = translate(keyboard, code);
     if (c != 0) {
         buffer_push(keyboard, c);
         ++keyboard->keys_seen;
@@ -245,6 +316,56 @@ static const DeviceDescriptor KEYBOARD_DEVICE = {
     .ops = &KEYBOARD_OPS,
 };
 
+static isize event_read(void* self, void* buffer, usize length, u64 offset)
+{
+    struct Ps2Keyboard* keyboard = (struct Ps2Keyboard*)self;
+
+    (void)offset;
+
+    /* Whole events only, for the same reason the mouse does it: half a struct
+     * is not something a caller can put back together. */
+    if (length < sizeof(struct key_event))
+        return -MODULE_ERR_INVALID;
+
+    while (keyboard->event_head == keyboard->event_tail)
+        keyboard->kernel->waitqueue_wait(keyboard->event_readers);
+
+    u8* out = (u8*)buffer;
+    usize written = 0;
+    while (written + sizeof(struct key_event) <= length
+        && keyboard->event_head != keyboard->event_tail) {
+        struct key_event const event = keyboard->events[keyboard->event_tail];
+        keyboard->event_tail = (keyboard->event_tail + 1) % EVENT_CAPACITY;
+
+        const u8* source = (const u8*)&event;
+        for (usize i = 0; i < sizeof(event); ++i)
+            out[written + i] = source[i];
+        written += sizeof(event);
+    }
+
+    return (isize)written;
+}
+
+static bool event_poll_readable(void* self)
+{
+    struct Ps2Keyboard* keyboard = (struct Ps2Keyboard*)self;
+    return keyboard->event_head != keyboard->event_tail;
+}
+
+static const DeviceOps EVENT_OPS = {
+    .read = event_read,
+    .write = 0,
+    .ioctl = 0,
+    .poll_readable = event_poll_readable,
+};
+
+static const DeviceDescriptor EVENT_DEVICE = {
+    .name = "kbdraw",
+    .type = DEVICE_TYPE_CHAR,
+    .self = &g_keyboard,
+    .ops = &EVENT_OPS,
+};
+
 static ModuleResult module_init(const KernelApi* kernel)
 {
     /* Newer is fine: the ABI only ever appends, so everything this driver
@@ -262,9 +383,20 @@ static ModuleResult module_init(const KernelApi* kernel)
     g_keyboard.keys_seen = 0;
     g_keyboard.bytes_dropped = 0;
 
+    g_keyboard.alt_held = false;
+    g_keyboard.event_head = 0;
+    g_keyboard.event_tail = 0;
+    g_keyboard.events_dropped = 0;
+
     g_keyboard.readers = kernel->waitqueue_create();
     if (g_keyboard.readers == 0)
         return MODULE_ERR_NO_MEMORY;
+
+    g_keyboard.event_readers = kernel->waitqueue_create();
+    if (g_keyboard.event_readers == 0) {
+        kernel->waitqueue_destroy(g_keyboard.readers);
+        return MODULE_ERR_NO_MEMORY;
+    }
 
     /* Drain anything the firmware left in the controller, or the first
      * interrupt never arrives because the output buffer is already full. */
@@ -280,11 +412,21 @@ static ModuleResult module_init(const KernelApi* kernel)
     result = kernel->device_register(&KEYBOARD_DEVICE);
     if (result != MODULE_OK) {
         kernel->irq_unregister(PS2_IRQ, &g_keyboard);
+        kernel->waitqueue_destroy(g_keyboard.event_readers);
         kernel->waitqueue_destroy(g_keyboard.readers);
         return result;
     }
 
-    kernel->log(LOG_INFO, "ps2kbd", "attached to irq %d, /dev/kbd0 ready", PS2_IRQ);
+    result = kernel->device_register(&EVENT_DEVICE);
+    if (result != MODULE_OK) {
+        kernel->device_unregister("kbd0");
+        kernel->irq_unregister(PS2_IRQ, &g_keyboard);
+        kernel->waitqueue_destroy(g_keyboard.event_readers);
+        kernel->waitqueue_destroy(g_keyboard.readers);
+        return result;
+    }
+
+    kernel->log(LOG_INFO, "ps2kbd", "attached to irq %d, /dev/kbd0 and /dev/kbdraw ready", PS2_IRQ);
     return MODULE_OK;
 }
 
@@ -294,8 +436,17 @@ static void module_fini(void)
     if (kernel == 0)
         return;
 
+    kernel->device_unregister("kbdraw");
     kernel->device_unregister("kbd0");
     kernel->irq_unregister(PS2_IRQ, &g_keyboard);
+
+    /* Wake anything blocked in a read before the queues go, or it never
+     * returns to notice the device is gone. */
+    kernel->waitqueue_wake_all(g_keyboard.event_readers);
+    kernel->waitqueue_destroy(g_keyboard.event_readers);
+    g_keyboard.event_readers = 0;
+
+    kernel->waitqueue_wake_all(g_keyboard.readers);
     kernel->waitqueue_destroy(g_keyboard.readers);
     g_keyboard.readers = 0;
 }

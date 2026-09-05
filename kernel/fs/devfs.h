@@ -27,6 +27,9 @@ public:
     ErrorOr<usize> write(u64 offset, void const* buffer, usize length) override;
     ErrorOr<int> ioctl(u32 request, void* argument) override;
     bool can_read_without_blocking() const override;
+    ErrorOr<PhysAddr> physical_page(u64 offset, bool for_write) override;
+    void on_description_opened(int flags) override;
+    void on_description_closed(int flags) override;
 
     ErrorOr<Inode*> lookup(char const* name) override;
     ErrorOr<bool> read_directory(usize index, DirectoryEntry& out) override;
@@ -45,6 +48,18 @@ private:
     DeviceOps const* m_ops { nullptr };
     void* m_device_self { nullptr };
 
+    // Devices whose memory a process may map -- the framebuffer today. Left
+    // zero for everything else, which then reports ENODEV like any other file.
+    // This is deliberately not part of DeviceOps: a loadable module cannot set
+    // it, because no module yet needs to, and inventing that ABI before there
+    // is a driver to shape it would be guessing.
+    PhysAddr m_memory_base { PhysAddr(0) };
+    u64 m_memory_length { 0 };
+
+    // Live descriptions onto this node. Only /dev/fb0 uses it, to notice when
+    // the last one goes away.
+    usize m_open_descriptions { 0 };
+
     Vector<DevfsInode*> m_children;
 };
 
@@ -60,6 +75,10 @@ public:
     Inode& root() override { return *m_root; }
 
     ErrorOr<void> register_device(DeviceDescriptor const& device);
+
+    // As above, plus a physical range the device will let a process mmap.
+    ErrorOr<void> register_memory_device(
+        DeviceDescriptor const& device, PhysAddr memory_base, u64 memory_length);
     void unregister_device(char const* name);
 
     usize device_count() const;

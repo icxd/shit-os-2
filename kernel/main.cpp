@@ -15,6 +15,7 @@
 #include <kernel/arch/x86_64/serial.h>
 #include <kernel/boot/boot_info.h>
 #include <kernel/dev/console.h>
+#include <kernel/dev/fbdev.h>
 #include <kernel/dev/framebuffer.h>
 #include <kernel/dev/tty.h>
 #include <kernel/fs/boot_mounts.h>
@@ -181,6 +182,9 @@ extern "C" [[noreturn]] void kernel_entry(u32 magic, u32 multiboot_info_phys)
     Process::initialize();
     sys::syscall_initialize();
     sys::faults_initialize();
+
+    if (auto fb = dev::framebuffer_device_initialize(); fb.is_error())
+        klog(LOG_WARN, "fbdev", "no /dev/fb0: %s", fb.error().to_string());
 
     if (auto tty = dev::Tty::initialize(); tty.is_error())
         klog(LOG_WARN, "tty", "no terminal: %s", tty.error().to_string());
