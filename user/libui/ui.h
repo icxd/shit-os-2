@@ -46,26 +46,41 @@ static inline int ui_rect_contains(UiRect r, int x, int y)
  */
 
 typedef struct UiTheme {
-    unsigned window_background;
-    unsigned surface;
-    unsigned surface_raised;
+    /*
+     * Surfaces, from furthest back to nearest front. Each step is a deliberate
+     * lift rather than a hand-picked hex: a control has to read as sitting on
+     * the panel it is in, and an input has to read as a hole in that panel.
+     */
+    unsigned background; /* the window itself */
+    unsigned surface; /* a panel on it */
+    unsigned surface_raised; /* a control on the panel */
+    unsigned surface_sunken; /* somewhere text is typed into */
 
-    unsigned text;
-    unsigned text_dim;
+    /* Text, at three deliberate contrast steps against `surface`. */
+    unsigned text; /* what you are meant to read */
+    unsigned text_dim; /* labels, captions, things that support it */
+    unsigned text_faint; /* disabled, and placeholders */
     unsigned text_on_accent;
 
     unsigned accent;
     unsigned accent_hover;
     unsigned accent_pressed;
 
-    unsigned border;
-    unsigned border_focus;
+    unsigned border; /* the edge of a surface */
+    unsigned border_strong; /* the edge of something interactive */
+    unsigned focus_ring; /* around whatever the keyboard is aimed at */
 
     unsigned danger;
+    unsigned success;
 
     int corner_radius;
+    int corner_radius_small;
     int padding;
     int spacing;
+
+    /* How far a control and a panel sit above what is behind them. */
+    int elevation_control;
+    int elevation_panel;
 } UiTheme;
 
 const UiTheme* ui_theme(void);
@@ -78,6 +93,35 @@ void ui_theme_set(const UiTheme* theme);
  * widget never needs to know where on the screen it is.
  */
 
+/*
+ * The faces an interface needs, opened once and shared. A style is a role
+ * rather than a size: "this is a heading" survives a change to the scale,
+ * "this is 18 pixels" does not.
+ */
+typedef struct UiFonts {
+    UiFont* body;
+    UiFont* strong; /* body weight-for-weight, bold */
+    UiFont* small;
+    UiFont* heading;
+    UiFont* mono;
+} UiFonts;
+
+typedef enum UiTextStyle {
+    UI_TEXT_BODY,
+    UI_TEXT_STRONG,
+    UI_TEXT_SMALL,
+    UI_TEXT_HEADING,
+    UI_TEXT_MONO,
+} UiTextStyle;
+
+/* Opens every face in the set from `directory`. Any that will not open is left
+ * null and falls back to the body face, so a missing bold is a flat-looking
+ * interface rather than a crash. */
+int ui_fonts_open(UiFonts*, const char* directory);
+void ui_fonts_close(UiFonts*);
+
+UiFont* ui_font_for(const UiFonts*, UiTextStyle);
+
 typedef struct UiPainter {
     unsigned* pixels;
     int width, height; /* of the whole surface */
@@ -85,14 +129,29 @@ typedef struct UiPainter {
     int origin_x, origin_y; /* added to every coordinate */
     UiRect clip; /* in surface coordinates */
 
+    /*
+     * The face this widget draws with, and the whole set it may pick from. One
+     * size and one weight throughout is most of what makes an interface look
+     * like a test harness, so a widget that wants a heading takes it from here
+     * rather than being handed a single font and making do.
+     */
     UiFont* font;
-    UiFont* bold;
+    const UiFonts* fonts;
 } UiPainter;
 
 void ui_fill_rect(UiPainter*, UiRect, unsigned colour);
+void ui_fill_rect_alpha(UiPainter*, UiRect, unsigned colour, unsigned alpha);
 void ui_fill_rounded(UiPainter*, UiRect, int radius, unsigned colour);
+void ui_fill_rounded_alpha(UiPainter*, UiRect, int radius, unsigned colour, unsigned alpha);
 void ui_stroke_rect(UiPainter*, UiRect, unsigned colour);
 void ui_stroke_rounded(UiPainter*, UiRect, int radius, unsigned colour);
+
+/*
+ * A soft shadow under a surface, drawn before the surface itself. `elevation`
+ * is how far the thing is meant to sit above what is behind it, in pixels; two
+ * or three for a control, six or so for a panel.
+ */
+void ui_drop_shadow(UiPainter*, UiRect, int radius, int elevation);
 
 typedef enum UiAlign {
     UI_ALIGN_LEFT,
@@ -197,17 +256,26 @@ UiWidget* ui_box_create(UiOrientation);
 void ui_box_set_spacing(UiWidget*, int spacing);
 void ui_box_set_padding(UiWidget*, int padding);
 
+/* A box that draws itself: a white card with a hairline and a soft shadow.
+ * Content on white sitting on a barely-grey window is most of the look. */
+UiWidget* ui_panel_create(UiOrientation);
+
 /* --- controls ---------------------------------------------------------------- */
 
 UiWidget* ui_label_create(const char* text);
 void ui_label_set_text(UiWidget*, const char* text);
 void ui_label_set_align(UiWidget*, UiAlign);
 void ui_label_set_colour(UiWidget*, unsigned colour);
+void ui_label_set_style(UiWidget*, UiTextStyle);
 
 typedef void (*UiAction)(UiWidget*, void* user);
 
 UiWidget* ui_button_create(const char* text, UiAction on_click, void* user);
 void ui_button_set_text(UiWidget*, const char* text);
+
+/* The one the window would do if you pressed return: filled with the accent
+ * rather than white. At most one per window, or it stops meaning anything. */
+void ui_button_set_default(UiWidget*, int is_default);
 
 UiWidget* ui_checkbox_create(const char* text, int checked);
 int ui_checkbox_is_checked(const UiWidget*);
@@ -229,6 +297,14 @@ void ui_window_destroy(UiWindow*);
 
 void ui_window_set_root(UiWindow*, UiWidget* root);
 UiWidget* ui_window_root(UiWindow*);
+
+/*
+ * The faces the window draws with. A widget needs these when it is *measured*,
+ * not only when it is painted -- guessing a width from the character count
+ * gives a box that the real text then does not fit in, which is exactly how
+ * "Disabled and checked" first came out as "Disabled and check".
+ */
+const UiFonts* ui_window_fonts(UiWindow*);
 
 void ui_window_set_title(UiWindow*, const char* title);
 

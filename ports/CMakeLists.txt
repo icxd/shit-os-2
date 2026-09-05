@@ -66,22 +66,22 @@ set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_FILES "${DASH_BINARY}")
 # The fonts. Not compiled, but fetched and checksummed like everything else in
 # here, because three quarters of a megabyte of somebody else's binary does not
 # belong in the tree either.
-set(FONT_STAMP "${CMAKE_BINARY_DIR}/user/share/fonts/.dejavu-stamp")
+set(FONT_STAMP "${CMAKE_BINARY_DIR}/user/share/fonts/.fonts-stamp")
 
 add_custom_command(
     OUTPUT "${FONT_STAMP}"
     COMMAND "${CMAKE_COMMAND}" -E env
             "SHITOS_PORT_CACHE=${CMAKE_SOURCE_DIR}/.port-cache"
-            "${CMAKE_SOURCE_DIR}/ports/dejavu/build.sh"
+            "${CMAKE_SOURCE_DIR}/ports/fonts/build.sh"
             "${CMAKE_BINARY_DIR}/user/share/fonts"
     COMMAND "${CMAKE_COMMAND}" -E touch "${FONT_STAMP}"
-    DEPENDS "${CMAKE_SOURCE_DIR}/ports/dejavu/build.sh"
-    COMMENT "Fetching port: dejavu fonts"
+    DEPENDS "${CMAKE_SOURCE_DIR}/ports/fonts/build.sh"
+    COMMENT "Fetching port: fonts"
     VERBATIM
 )
 
-add_custom_target(port-dejavu ALL DEPENDS "${FONT_STAMP}")
-set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_TARGETS port-dejavu)
+add_custom_target(port-fonts ALL DEPENDS "${FONT_STAMP}")
+set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_TARGETS port-fonts)
 set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_FILES "${FONT_STAMP}")
 
 # sbase builds ninety-odd programs, so the stamp rather than any one of them is

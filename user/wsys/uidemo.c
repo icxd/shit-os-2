@@ -57,37 +57,43 @@ int main(void)
     }
 
     UiWidget* root = ui_box_create(UI_VERTICAL);
-    ui_box_set_padding(root, 14);
-    ui_box_set_spacing(root, 10);
+    ui_box_set_padding(root, 16);
+    ui_box_set_spacing(root, 12);
 
-    UiWidget* heading = ui_label_create("A window, with things in it");
-    ui_label_set_colour(heading, ui_theme()->text);
+    UiWidget* heading = ui_label_create("Widgets");
+    ui_label_set_style(heading, UI_TEXT_HEADING);
     ui_widget_add(root, heading);
 
     /* A row: a field and the button that reads it. */
+    UiWidget* panel = ui_panel_create(UI_VERTICAL);
+    panel->expand_x = 1;
+    panel->expand_y = 1;
+    ui_widget_add(root, panel);
+
     UiWidget* row = ui_box_create(UI_HORIZONTAL);
     ui_box_set_padding(row, 0);
     g_field = ui_textfield_create("world");
     g_field->expand_x = 1;
     ui_widget_add(row, g_field);
     ui_widget_add(row, ui_button_create("Greet", on_greet, NULL));
-    ui_widget_add(root, row);
+    ui_widget_add(panel, row);
 
     g_status = ui_label_create("Type a name and press Greet.");
     ui_label_set_colour(g_status, ui_theme()->text_dim);
-    ui_widget_add(root, g_status);
+    ui_widget_add(panel, g_status);
 
-    ui_widget_add(root, ui_checkbox_create("A checkbox, which does nothing", 1));
-    ui_widget_add(root, ui_checkbox_create("And another, which also does nothing", 0));
+    ui_widget_add(panel, ui_checkbox_create("A checkbox, which does nothing", 1));
+    ui_widget_add(panel, ui_checkbox_create("And another, which also does nothing", 0));
 
     g_counter = ui_label_create("clicked 0 times");
-    ui_widget_add(root, g_counter);
+    ui_label_set_colour(g_counter, ui_theme()->text_dim);
+    ui_widget_add(panel, g_counter);
 
     /* A spacer that takes all the leftover height, which is how the buttons
      * below end up pinned to the bottom. */
     UiWidget* spacer = ui_box_create(UI_VERTICAL);
     spacer->expand_y = 1;
-    ui_widget_add(root, spacer);
+    ui_widget_add(panel, spacer);
 
     UiWidget* buttons = ui_box_create(UI_HORIZONTAL);
     ui_box_set_padding(buttons, 0);
@@ -97,7 +103,9 @@ int main(void)
     gap->expand_x = 1;
     ui_widget_add(buttons, gap);
 
-    ui_widget_add(buttons, ui_button_create("Quit", on_quit, NULL));
+    UiWidget* quit = ui_button_create("Quit", on_quit, NULL);
+    ui_button_set_default(quit, 1);
+    ui_widget_add(buttons, quit);
     ui_widget_add(root, buttons);
 
     ui_window_set_root(window, root);

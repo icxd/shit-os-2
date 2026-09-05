@@ -16,24 +16,40 @@ typedef struct UiLabel {
     UiWidget base;
     char text[TEXT_MAX];
     UiAlign align;
+    UiTextStyle style;
     unsigned colour;
     int has_colour;
 } UiLabel;
 
+/*
+ * Measured with the same face that will draw it. A width guessed from the
+ * character count is a box the text then does not fit in, and proportional
+ * text has no character width to guess with in the first place.
+ *
+ * A widget with no window yet -- one built before it was added to a tree --
+ * falls back to an estimate, because there is nothing better to be had and a
+ * layout that happens again the moment it has a window costs nothing.
+ */
+static void measure_text(
+    UiWidget* widget, UiTextStyle style, const char* text, int* width, int* height)
+{
+    const UiFonts* fonts = ui_window_fonts(widget->window);
+    UiFont* font = ui_font_for(fonts, style);
+
+    if (font == NULL) {
+        *width = (int)strlen(text) * 8;
+        *height = 20;
+        return;
+    }
+
+    *width = ui_text_width(font, text);
+    *height = ui_font_line_height(font);
+}
+
 static void label_measure(UiWidget* widget, int* width, int* height)
 {
     UiLabel* label = (UiLabel*)widget;
-
-    /*
-     * Measured without a font, because a widget is measured before it is
-     * painted and the font lives on the painter. Eight pixels per character
-     * is close enough for a layout that then gets the real width when it
-     * draws -- and every label here is in a box that gives it the space
-     * anyway.
-     */
-    int const length = (int)strlen(label->text);
-    *width = length * 8;
-    *height = 20;
+    measure_text(widget, label->style, label->text, width, height);
 }
 
 static void label_paint(UiWidget* widget, UiPainter* painter)
@@ -43,9 +59,11 @@ static void label_paint(UiWidget* widget, UiPainter* painter)
 
     unsigned const colour = label->has_colour
         ? label->colour
-        : (widget->enabled ? ui_theme()->text : ui_theme()->text_dim);
+        : (widget->enabled ? ui_theme()->text : ui_theme()->text_faint);
 
-    ui_draw_text(painter, bounds, label->text, colour, label->align);
+    UiPainter styled = *painter;
+    styled.font = ui_font_for(painter->fonts, label->style);
+    ui_draw_text(&styled, bounds, label->text, colour, label->align);
 }
 
 static const UiWidgetClass LABEL_CLASS = {
@@ -86,6 +104,12 @@ void ui_label_set_colour(UiWidget* widget, unsigned colour)
     ui_widget_invalidate(widget);
 }
 
+void ui_label_set_style(UiWidget* widget, UiTextStyle style)
+{
+    ((UiLabel*)widget)->style = style;
+    ui_widget_invalidate(widget);
+}
+
 /* --- button ------------------------------------------------------------------ */
 
 typedef struct UiButton {
@@ -94,13 +118,18 @@ typedef struct UiButton {
     UiAction on_click;
     void* user;
     int pressed;
+    int is_default; /* the blue one; there is at most one per window */
 } UiButton;
 
 static void button_measure(UiWidget* widget, int* width, int* height)
 {
     UiButton* button = (UiButton*)widget;
-    *width = (int)strlen(button->text) * 8 + ui_theme()->padding * 3;
-    *height = 28;
+    int text_width = 0;
+    int text_height = 0;
+    measure_text(widget, UI_TEXT_STRONG, button->text, &text_width, &text_height);
+
+    *width = text_width + ui_theme()->padding * 3;
+    *height = text_height + ui_theme()->padding + 2;
 }
 
 static void button_paint(UiWidget* widget, UiPainter* painter)
@@ -109,23 +138,52 @@ static void button_paint(UiWidget* widget, UiPainter* painter)
     const UiTheme* theme = ui_theme();
     UiRect const bounds = { 0, 0, widget->rect.width, widget->rect.height };
 
-    unsigned background = theme->accent;
-    if (!widget->enabled)
-        background = theme->surface_raised;
-    else if (button->pressed)
-        background = theme->accent_pressed;
-    else if (widget->hovered)
-        background = theme->accent_hover;
+    /*
+     * Two kinds, as macOS has: the default action is filled with the accent,
+     * and everything else is white with a hairline. A dialog full of blue
+     * buttons tells you nothing about which one to press.
+     */
+    unsigned background;
+    unsigned ink;
+
+    if (button->is_default) {
+        background = theme->accent;
+        if (!widget->enabled)
+            background = theme->border;
+        else if (button->pressed)
+            background = theme->accent_pressed;
+        else if (widget->hovered)
+            background = theme->accent_hover;
+        ink = widget->enabled ? theme->text_on_accent : 0xffffff;
+    } else {
+        background = theme->surface;
+        if (!widget->enabled)
+            background = theme->surface;
+        else if (button->pressed)
+            background = 0xe8e8ed;
+        else if (widget->hovered)
+            background = 0xf7f7fa;
+        ink = widget->enabled ? theme->text : theme->text_faint;
+    }
+
+    /* A white button needs the shadow to lift off the panel; a filled one has
+     * enough contrast of its own and looks heavy with one. */
+    if (widget->enabled && !button->pressed && !button->is_default)
+        ui_drop_shadow(painter, bounds, theme->corner_radius, theme->elevation_control);
 
     ui_fill_rounded(painter, bounds, theme->corner_radius, background);
 
-    /* A pressed button gets no border and an enabled one does, which is most
-     * of what makes it read as going in and coming out again. */
-    if (!button->pressed)
+    if (!button->is_default)
         ui_stroke_rounded(painter, bounds, theme->corner_radius, theme->border);
 
-    unsigned const ink = widget->enabled ? theme->text_on_accent : theme->text_dim;
-    ui_draw_text(painter, bounds, button->text, ink, UI_ALIGN_CENTRE);
+    if (ui_window_focused(widget->window) == widget) {
+        UiRect const inner = { bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2 };
+        ui_stroke_rounded(painter, inner, theme->corner_radius - 1, theme->focus_ring);
+    }
+
+    UiPainter styled = *painter;
+    styled.font = ui_font_for(painter->fonts, UI_TEXT_STRONG);
+    ui_draw_text(&styled, bounds, button->text, ink, UI_ALIGN_CENTRE);
 }
 
 static int button_on_mouse(UiWidget* widget, const UiMouseEvent* event)
@@ -174,6 +232,12 @@ UiWidget* ui_button_create(const char* text, UiAction on_click, void* user)
     return widget;
 }
 
+void ui_button_set_default(UiWidget* widget, int is_default)
+{
+    ((UiButton*)widget)->is_default = is_default != 0;
+    ui_widget_invalidate(widget);
+}
+
 void ui_button_set_text(UiWidget* widget, const char* text)
 {
     UiButton* button = (UiButton*)widget;
@@ -196,8 +260,12 @@ typedef struct UiCheckbox {
 static void checkbox_measure(UiWidget* widget, int* width, int* height)
 {
     UiCheckbox* box = (UiCheckbox*)widget;
-    *width = CHECKBOX_SIZE + ui_theme()->spacing + (int)strlen(box->text) * 8;
-    *height = 24;
+    int text_width = 0;
+    int text_height = 0;
+    measure_text(widget, UI_TEXT_BODY, box->text, &text_width, &text_height);
+
+    *width = CHECKBOX_SIZE + ui_theme()->spacing + text_width;
+    *height = text_height > CHECKBOX_SIZE ? text_height + 6 : CHECKBOX_SIZE + 6;
 }
 
 static void checkbox_paint(UiWidget* widget, UiPainter* painter)
@@ -208,26 +276,43 @@ static void checkbox_paint(UiWidget* widget, UiPainter* painter)
     UiRect const mark
         = { 0, (widget->rect.height - CHECKBOX_SIZE) / 2, CHECKBOX_SIZE, CHECKBOX_SIZE };
 
-    ui_fill_rounded(painter, mark, 3, box->checked ? theme->accent : theme->surface);
-    ui_stroke_rounded(painter, mark, 3, widget->hovered ? theme->border_focus : theme->border);
+    unsigned fill = theme->surface;
+    if (box->checked)
+        fill = widget->enabled ? theme->accent : theme->border;
+
+    if (!box->checked && widget->enabled)
+        ui_drop_shadow(painter, mark, theme->corner_radius_small, 1);
+
+    ui_fill_rounded(painter, mark, theme->corner_radius_small, fill);
+
+    /* Only the empty one is outlined. A filled checkbox with a border round it
+     * looks like two controls. */
+    if (!box->checked)
+        ui_stroke_rounded(painter, mark, theme->corner_radius_small,
+            widget->hovered && widget->enabled ? theme->border_strong : theme->border);
 
     if (box->checked) {
-        /* A tick, drawn as two strokes. Small enough that the exact shape
-         * matters less than it being obviously not a filled square. */
-        for (int i = 0; i < 4; ++i) {
-            UiRect const p = { mark.x + 4 + i, mark.y + 7 + i, 2, 2 };
-            ui_fill_rect(painter, p, theme->text_on_accent);
+        /*
+         * The tick, as two strokes of a two-pixel pen. Drawn rather than
+         * spelled with a glyph so that it lines up with the box at any size
+         * and does not depend on the font having one.
+         */
+        unsigned const ink = widget->enabled ? theme->text_on_accent : theme->text_faint;
+
+        for (int i = 0; i < 3; ++i) {
+            UiRect const stroke = { mark.x + 4 + i, mark.y + 8 + i, 2, 2 };
+            ui_fill_rounded(painter, stroke, 1, ink);
         }
-        for (int i = 0; i < 5; ++i) {
-            UiRect const p = { mark.x + 7 + i, mark.y + 10 - i, 2, 2 };
-            ui_fill_rect(painter, p, theme->text_on_accent);
+        for (int i = 0; i < 6; ++i) {
+            UiRect const stroke = { mark.x + 6 + i, mark.y + 11 - i, 2, 2 };
+            ui_fill_rounded(painter, stroke, 1, ink);
         }
     }
 
     UiRect const label = { CHECKBOX_SIZE + theme->spacing, 0,
         widget->rect.width - CHECKBOX_SIZE - theme->spacing, widget->rect.height };
-    ui_draw_text(
-        painter, label, box->text, widget->enabled ? theme->text : theme->text_dim, UI_ALIGN_LEFT);
+    ui_draw_text(painter, label, box->text, widget->enabled ? theme->text : theme->text_faint,
+        UI_ALIGN_LEFT);
 }
 
 static int checkbox_on_mouse(UiWidget* widget, const UiMouseEvent* event)
@@ -294,8 +379,8 @@ typedef struct UiTextField {
 static void textfield_measure(UiWidget* widget, int* width, int* height)
 {
     (void)widget;
-    *width = 160;
-    *height = 28;
+    *width = 180;
+    *height = 32;
 }
 
 static void textfield_paint(UiWidget* widget, UiPainter* painter)
@@ -306,13 +391,25 @@ static void textfield_paint(UiWidget* widget, UiPainter* painter)
 
     int const focused = ui_window_focused(widget->window) == widget;
 
-    ui_fill_rounded(painter, bounds, theme->corner_radius, theme->window_background);
+    /* White, with a hairline, and the accent takes over the outline when it has
+     * focus. On a light interface a field is defined by its edge rather than by
+     * being darker than what it sits on. */
+    ui_fill_rounded(painter, bounds, theme->corner_radius_small, theme->surface);
     ui_stroke_rounded(
-        painter, bounds, theme->corner_radius, focused ? theme->border_focus : theme->border);
+        painter, bounds, theme->corner_radius_small, focused ? theme->accent : theme->border);
+
+    if (focused) {
+        UiRect const ring = { bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2 };
+        ui_stroke_rounded(painter, ring, theme->corner_radius_small - 1, theme->focus_ring);
+    }
 
     UiRect const inner
         = { theme->padding, 0, widget->rect.width - theme->padding * 2, widget->rect.height };
-    ui_draw_text(painter, inner, field->text, theme->text, UI_ALIGN_LEFT);
+
+    if (field->length == 0 && !focused)
+        ui_draw_text(painter, inner, "empty", theme->text_faint, UI_ALIGN_LEFT);
+    else
+        ui_draw_text(painter, inner, field->text, theme->text, UI_ALIGN_LEFT);
 
     if (focused && painter->font != NULL) {
         /* The caret sits after the text up to the insertion point, so it has
@@ -326,8 +423,8 @@ static void textfield_paint(UiWidget* widget, UiPainter* painter)
         int const offset = ui_text_width(painter->font, before);
         int const height = ui_font_line_height(painter->font);
         UiRect const caret
-            = { inner.x + offset, (widget->rect.height - height) / 2 + 2, 1, height - 2 };
-        ui_fill_rect(painter, caret, theme->text);
+            = { inner.x + offset, (widget->rect.height - height) / 2 + 3, 2, height - 4 };
+        ui_fill_rounded(painter, caret, 1, theme->accent);
     }
 }
 

@@ -37,7 +37,7 @@ struct UiWindow {
     UiWidget* hovered;
     UiWidget* mouse_grab; /* whoever saw the press keeps the drag */
 
-    UiFont* font;
+    UiFonts fonts;
 
     int needs_layout;
     int needs_paint;
@@ -127,12 +127,12 @@ static void repaint(UiWindow* window)
         .origin_x = 0,
         .origin_y = 0,
         .clip = { 0, 0, window->width, window->height },
-        .font = window->font,
-        .bold = window->font,
+        .font = window->fonts.body,
+        .fonts = &window->fonts,
     };
 
     UiRect const whole = { 0, 0, window->width, window->height };
-    ui_fill_rect(&painter, whole, ui_theme()->window_background);
+    ui_fill_rect(&painter, whole, ui_theme()->background);
 
     paint_widget(window->root, &painter);
 
@@ -245,7 +245,8 @@ UiWindow* ui_window_create(const char* title, int width, int height)
         return NULL;
     }
 
-    window->font = ui_font_open("/usr/share/fonts/sans.ttf", 14.0);
+    if (ui_fonts_open(&window->fonts, "/usr/share/fonts") != 0)
+        fprintf(stderr, "libui: no fonts in /usr/share/fonts; text will not draw\n");
 
     struct WsysMessage message;
     memset(&message, 0, sizeof(message));
@@ -305,8 +306,7 @@ void ui_window_destroy(UiWindow* window)
 
     if (window->root != NULL)
         ui_widget_destroy(window->root);
-    if (window->font != NULL)
-        ui_font_close(window->font);
+    ui_fonts_close(&window->fonts);
     if (window->pixels != NULL)
         munmap(window->pixels, window->pixels_length);
 
@@ -347,6 +347,11 @@ void ui_window_set_root(UiWindow* window, UiWidget* root)
 UiWidget* ui_window_root(UiWindow* window)
 {
     return window->root;
+}
+
+const UiFonts* ui_window_fonts(UiWindow* window)
+{
+    return window != NULL ? &window->fonts : NULL;
 }
 
 void ui_window_set_title(UiWindow* window, const char* title)

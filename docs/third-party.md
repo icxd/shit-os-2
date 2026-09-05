@@ -103,27 +103,32 @@ sbase is distributed under the MIT licence.
 - Upstream: <https://core.suckless.org/sbase/>
 - Licence: `LICENSE` in the checkout the port makes
 
-## DejaVu (fonts, fetched not vendored)
+## Fonts (fetched, not vendored)
 
-`ports/dejavu/` downloads the DejaVu 2.37 release, checks the archive's
-SHA-256 and then each of the two files it takes out of it, and installs
-`sans.ttf` and `mono.ttf`. Nothing is compiled; it is a port because three
-quarters of a megabyte of somebody else's binary does not belong in this tree
-either, and a checksum is a better claim about what you are running than a
-file that happens to be in git.
+`ports/fonts/` downloads two releases, checks each archive's SHA-256 and then
+each file it takes out of them, and installs three faces. Nothing is compiled;
+it is a port because a megabyte of somebody else's binary does not belong in
+this tree either, and a checksum is a better claim about what you are running
+than a file that happens to be in git.
 
-Only two of the sixteen faces in the release are installed. The rest would
-make the image bigger and nothing selects them.
+**Inter** (regular and semibold) for the interface. The desktop is styled after
+macOS, and Inter is the closest freely licensed face to the one macOS uses --
+the same tall x-height, the same open apertures, the same slightly condensed
+feel at small sizes. Semibold rather than bold because that is what macOS
+emphasises with; a full bold looks heavy-handed beside it.
 
-DejaVu is under a permissive Bitstream Vera derivative licence, which the port
-copies into the image beside the fonts because the licence requires it.
+**DejaVu Sans Mono** for the terminal. Inter has no monospace, and a terminal
+needs one whose zero cannot be mistaken for a capital O.
 
-- Upstream: <https://dejavu-fonts.github.io/>
-- Licence: `LICENSE`, installed next to the fonts
+- Inter: <https://rsms.me/inter/>, SIL Open Font License 1.1
+- DejaVu: <https://dejavu-fonts.github.io/>, a permissive Bitstream Vera derivative
+
+Both licences are copied into the image beside the fonts, because both require
+it.
 
 The **rasteriser is ours**: `user/libui/truetype.c` parses the tables and
 renders the outlines, written from the specification. No FreeType, no
-stb_truetype, no code from the font project. See below.
+stb_truetype, no code from either font project. See below.
 
 ## Specifications implemented, not copied
 

@@ -247,6 +247,44 @@ static const UiWidgetClass BOX_CLASS = {
     .layout = box_layout,
 };
 
+/* --- the panel ----------------------------------------------------------------
+ *
+ * A box that draws itself: a white surface with a hairline and a soft shadow.
+ * The whole macOS look is content on white sitting on a barely-grey window, and
+ * this is the "on white" half of that.
+ */
+
+static void panel_paint(UiWidget* widget, UiPainter* painter)
+{
+    const UiTheme* theme = ui_theme();
+    UiRect const bounds = { 0, 0, widget->rect.width, widget->rect.height };
+
+    ui_drop_shadow(painter, bounds, theme->corner_radius, theme->elevation_panel);
+    ui_fill_rounded(painter, bounds, theme->corner_radius, theme->surface);
+    ui_stroke_rounded(painter, bounds, theme->corner_radius, theme->border);
+}
+
+static const UiWidgetClass PANEL_CLASS = {
+    .name = "panel",
+    .size = sizeof(UiBox),
+    .paint = panel_paint,
+    .measure = box_measure,
+    .layout = box_layout,
+};
+
+UiWidget* ui_panel_create(UiOrientation orientation)
+{
+    UiWidget* widget = ui_widget_create(&PANEL_CLASS);
+    if (widget == NULL)
+        return NULL;
+
+    UiBox* box = (UiBox*)widget;
+    box->orientation = orientation;
+    box->spacing = ui_theme()->spacing;
+    box->padding = ui_theme()->padding + 4;
+    return widget;
+}
+
 UiWidget* ui_box_create(UiOrientation orientation)
 {
     UiWidget* widget = ui_widget_create(&BOX_CLASS);

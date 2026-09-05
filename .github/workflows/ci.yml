@@ -160,6 +160,26 @@ jobs:
         # somewhere harmless in QEMU and are invisible until they do not.
         run: ./tools/check-truetype.sh
 
+  toolkit:
+    name: widget toolkit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang and the sanitizer runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libclang-rt-dev
+
+      - name: Lay out and paint every control
+        # The painter and the widgets touch nothing but memory, so they run
+        # here exactly as on the target -- and the layout assertions catch a
+        # widget escaping its parent, which on the target is only visible as a
+        # screenshot somebody has to look at.
+        run: ./tools/check-ui.sh
+
   format:
     name: formatting
     runs-on: ubuntu-latest

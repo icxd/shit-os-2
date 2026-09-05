@@ -20,7 +20,7 @@
 #include <shitos/abi/input.h>
 #include <shitos/wsys/protocol.h>
 
-#include "text.h"
+#include "ui.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -37,16 +37,33 @@
 #define MAX_CLIENTS 16
 #define MAX_WINDOWS 32
 
-#define COLOUR_DESKTOP 0x141420
-#define COLOUR_DESKTOP_LOW 0x2a2a3c
-#define COLOUR_CHROME 0x2f3140
-#define COLOUR_CHROME_FOCUSED 0x3f5b86
-#define COLOUR_BORDER 0x11121a
-#define COLOUR_TITLE 0xd8d8e4
-#define COLOUR_TITLE_DIM 0x8a8a9a
-#define COLOUR_CLOSE 0xd3544f
+/*
+ * Styled after macOS. The chrome is almost all hairlines and very soft
+ * shadows: a titlebar that is barely a different grey from the content, a
+ * frame rounded enough to be obviously deliberate, and three coloured circles
+ * that everyone on earth recognises.
+ */
+#define COLOUR_DESKTOP_TOP 0x3f5f8f
+#define COLOUR_DESKTOP_BOTTOM 0x2a3f5f
+
+#define COLOUR_CHROME 0xe8e8ea
+#define COLOUR_CHROME_UNFOCUSED 0xf2f2f4
+#define COLOUR_FRAME_BORDER 0xb4b4b8
+#define COLOUR_CHROME_SEPARATOR 0xd0d0d4
+
+#define COLOUR_TITLE 0x3a3a3e
+#define COLOUR_TITLE_DIM 0xa0a0a6
+
+/* The traffic lights, and what they go to when the window is not in front. */
+#define COLOUR_CLOSE 0xff5f57
+#define COLOUR_MINIMISE 0xfebc2e
+#define COLOUR_ZOOM 0x28c840
+#define COLOUR_LIGHT_INACTIVE 0xd2d2d6
+
 #define COLOUR_CURSOR 0xffffff
-#define COLOUR_CURSOR_EDGE 0x000000
+#define COLOUR_CURSOR_EDGE 0x1a1a1e
+
+#define WINDOW_CORNER_RADIUS 10
 
 struct Window {
     int used;
@@ -135,7 +152,15 @@ static void damage_all(void)
     damage(0, 0, g_width, g_height);
 }
 
-/* The framebuffer's own packing, which is not guaranteed to be 0x00RRGGBB. */
+/*
+ * The back buffer holds plain 0xRRGGBB, and packing into whatever the
+ * framebuffer wants happens once, in the blit. That is what lets the toolkit's
+ * painter draw the chrome directly into it -- there is one implementation of a
+ * rounded rectangle in this system, and the window frames use it rather than
+ * carrying a second copy that drifts.
+ */
+/* The framebuffer's own packing, which is not guaranteed to be 0x00RRGGBB.
+ * Called once per pixel in the blit, and only when it is not the identity. */
 static unsigned pack(unsigned rgb)
 {
     unsigned const r = (rgb >> 16) & 0xff;
@@ -144,46 +169,22 @@ static unsigned pack(unsigned rgb)
     return (r << g_info.red_shift) | (g << g_info.green_shift) | (b << g_info.blue_shift);
 }
 
-static void back_fill(int x, int y, int w, int h, unsigned colour)
+static UiPainter g_painter;
+static UiFonts g_fonts;
+
+static void painter_reset(void)
 {
-    if (x < 0) {
-        w += x;
-        x = 0;
-    }
-    if (y < 0) {
-        h += y;
-        y = 0;
-    }
-    if (x + w > g_width)
-        w = g_width - x;
-    if (y + h > g_height)
-        h = g_height - y;
-    if (w <= 0 || h <= 0)
-        return;
-
-    for (int row = 0; row < h; ++row) {
-        unsigned* line = g_back + (size_t)(y + row) * g_width + x;
-        for (int column = 0; column < w; ++column)
-            line[column] = colour;
-    }
-}
-
-/*
- * Titles are drawn with the real font when there is one. There may not be:
- * ports can be switched off at configure time, and a desktop with unlabelled
- * windows is a great deal better than one that refuses to start.
- */
-static UiFont* g_title_font;
-
-static void back_text(int x, int baseline, const char* text, unsigned colour, int max_width)
-{
-    if (g_title_font == NULL)
-        return;
-
-    /* Clipped rather than truncated, so a long title fades off the end of the
-     * space it has instead of stopping at whichever letter happened to fit. */
-    ui_text_draw_clipped(g_title_font, g_back, g_width, g_height, x, baseline, text, colour, x, 0,
-        x + max_width, g_height);
+    g_painter.pixels = g_back;
+    g_painter.width = g_width;
+    g_painter.height = g_height;
+    g_painter.origin_x = 0;
+    g_painter.origin_y = 0;
+    g_painter.clip.x = 0;
+    g_painter.clip.y = 0;
+    g_painter.clip.width = g_width;
+    g_painter.clip.height = g_height;
+    g_painter.font = g_fonts.body;
+    g_painter.fonts = &g_fonts;
 }
 
 /* --- windows -------------------------------------------------------------- */
@@ -208,9 +209,18 @@ static int content_origin_y(const struct Window* window)
     return window->y + WSYS_TITLEBAR_HEIGHT;
 }
 
+/*
+ * The frame *and* its shadow. The shadow is drawn well outside the window, so
+ * damaging only the frame leaves a smear of stale shadow behind every time one
+ * is dragged -- the back buffer is right and the screen never hears about it.
+ */
+#define WINDOW_SHADOW_MARGIN 24
+
 static void damage_window(const struct Window* window)
 {
-    damage(window->x, window->y, window->x + frame_width(window), window->y + frame_height(window));
+    damage(window->x - WINDOW_SHADOW_MARGIN, window->y - WINDOW_SHADOW_MARGIN,
+        window->x + frame_width(window) + WINDOW_SHADOW_MARGIN,
+        window->y + frame_height(window) + WINDOW_SHADOW_MARGIN);
 }
 
 static struct Window* window_by_id(unsigned id)
@@ -252,37 +262,71 @@ static void unstack_window(unsigned id)
     g_stack_depth = out;
 }
 
+/* The red one, on the left, where macOS puts it. */
 static void close_button_rect(const struct Window* window, int* x, int* y, int* size)
 {
-    *size = 14;
-    *x = window->x + frame_width(window) - *size - 6;
+    *size = 12;
+    *x = window->x + 12;
     *y = window->y + (WSYS_TITLEBAR_HEIGHT - *size) / 2;
 }
 
 static void draw_window(struct Window* window)
 {
     int const focused = window->id == focused_window_id();
+    UiRect const frame = { window->x, window->y, frame_width(window), frame_height(window) };
 
-    /* Frame: a one-pixel border and a titlebar above the content. */
-    back_fill(window->x, window->y, frame_width(window), frame_height(window), pack(COLOUR_BORDER));
-    back_fill(window->x + WSYS_BORDER_WIDTH, window->y + WSYS_BORDER_WIDTH,
-        frame_width(window) - 2 * WSYS_BORDER_WIDTH, WSYS_TITLEBAR_HEIGHT - WSYS_BORDER_WIDTH,
-        pack(focused ? COLOUR_CHROME_FOCUSED : COLOUR_CHROME));
+    /*
+     * The shadow is what makes a window look like it is above the desktop
+     * rather than painted on it, and on macOS it is enormous and very faint.
+     * The focused window gets more of it, which is a large part of how you can
+     * tell at a glance which one is in front.
+     */
+    ui_drop_shadow(&g_painter, frame, WINDOW_CORNER_RADIUS, focused ? 14 : 7);
 
-    int const title_width = frame_width(window) - 12 - 24;
-    int const baseline = window->y
-        + (WSYS_TITLEBAR_HEIGHT + (g_title_font != NULL ? ui_font_ascent(g_title_font) : 12)) / 2;
-    back_text(window->x + 10, baseline, window->title,
-        pack(focused ? COLOUR_TITLE : COLOUR_TITLE_DIM), title_width);
+    ui_fill_rounded(
+        &g_painter, frame, WINDOW_CORNER_RADIUS, focused ? COLOUR_CHROME : COLOUR_CHROME_UNFOCUSED);
 
-    int close_x, close_y, close_size;
-    close_button_rect(window, &close_x, &close_y, &close_size);
-    back_fill(close_x, close_y, close_size, close_size, pack(COLOUR_CLOSE));
+    /* --- the traffic lights --- */
+    int const light_size = 12;
+    int const light_y = window->y + (WSYS_TITLEBAR_HEIGHT - light_size) / 2;
+    unsigned const lights[3] = { COLOUR_CLOSE, COLOUR_MINIMISE, COLOUR_ZOOM };
 
-    /* Content: straight out of the client's buffer. This copy is the only
-     * thing that ever reads it, and the client may be writing as we read --
-     * the worst case is one frame that mixes two, which is better than the
-     * lock-step a lock would impose. */
+    for (int i = 0; i < 3; ++i) {
+        UiRect const light
+            = { window->x + 12 + i * (light_size + 8), light_y, light_size, light_size };
+        ui_fill_rounded(
+            &g_painter, light, light_size / 2, focused ? lights[i] : COLOUR_LIGHT_INACTIVE);
+    }
+
+    /*
+     * The title is centred on the window, not on the space left over beside
+     * the lights. That is what macOS does, and it is why a title looks
+     * off-centre there when the window is narrow -- it is centred on the frame
+     * and the lights simply overlap where it would have been.
+     */
+    if (g_fonts.strong != NULL) {
+        UiPainter titlebar = g_painter;
+        titlebar.font = g_fonts.strong;
+
+        int const lights_end = 12 + 3 * (light_size + 8);
+        UiRect const bounds = { window->x + lights_end, window->y, frame.width - lights_end * 2,
+            WSYS_TITLEBAR_HEIGHT };
+
+        ui_draw_text(&titlebar, bounds, window->title, focused ? COLOUR_TITLE : COLOUR_TITLE_DIM,
+            UI_ALIGN_CENTRE);
+    }
+
+    /* A hairline under the titlebar, and one around the whole frame. */
+    UiRect const separator = { window->x, window->y + WSYS_TITLEBAR_HEIGHT - 1, frame.width, 1 };
+    ui_fill_rect(&g_painter, separator, COLOUR_CHROME_SEPARATOR);
+    ui_stroke_rounded(&g_painter, frame, WINDOW_CORNER_RADIUS, COLOUR_FRAME_BORDER);
+
+    /*
+     * Content, straight out of the client's buffer. This copy is the only
+     * thing that ever reads it, and the client may be writing as we read -- the
+     * worst case is one frame that mixes two, which is better than the
+     * lock-step a lock would impose.
+     */
     if (window->pixels == NULL)
         return;
 
@@ -310,7 +354,7 @@ static void draw_window(struct Window* window)
             continue;
 
         for (int column = 0; column < count; ++column)
-            destination[column] = pack(source[start + column]);
+            destination[column] = source[start + column];
     }
 }
 
@@ -344,28 +388,34 @@ static void draw_cursor(void)
             int const py = g_cursor_y + row;
             if (px < 0 || py < 0 || px >= g_width || py >= g_height)
                 continue;
-            g_back[(size_t)py * g_width + px]
-                = pack(pixel == 'X' ? COLOUR_CURSOR_EDGE : COLOUR_CURSOR);
+            g_back[(size_t)py * g_width + px] = pixel == 'X' ? COLOUR_CURSOR_EDGE : COLOUR_CURSOR;
         }
     }
 }
 
 static void draw_desktop(void)
 {
+    /*
+     * A plain vertical gradient. Not a photograph, but the point of a desktop
+     * background is to be something windows are obviously on top of.
+     *
+     * Signed, deliberately. The first version interpolated in unsigned and the
+     * top colour happened to be lighter than the bottom, so every channel
+     * difference wrapped to about four billion and the sky came out in bands of
+     * green.
+     */
+    int const top = COLOUR_DESKTOP_TOP;
+    int const bottom = COLOUR_DESKTOP_BOTTOM;
+
     for (int y = 0; y < g_height; ++y) {
-        unsigned const top = (COLOUR_DESKTOP >> 16) & 0xff;
-        unsigned const bottom = (COLOUR_DESKTOP_LOW >> 16) & 0xff;
-        unsigned const r = top + (bottom - top) * y / g_height;
+        unsigned colour = 0;
+        for (int shift = 0; shift <= 16; shift += 8) {
+            int const from = (top >> shift) & 0xff;
+            int const to = (bottom >> shift) & 0xff;
+            int const value = from + (to - from) * y / g_height;
+            colour |= (unsigned)value << shift;
+        }
 
-        unsigned const tg = (COLOUR_DESKTOP >> 8) & 0xff;
-        unsigned const bg = (COLOUR_DESKTOP_LOW >> 8) & 0xff;
-        unsigned const g = tg + (bg - tg) * y / g_height;
-
-        unsigned const tb = COLOUR_DESKTOP & 0xff;
-        unsigned const bb = COLOUR_DESKTOP_LOW & 0xff;
-        unsigned const b = tb + (bb - tb) * y / g_height;
-
-        unsigned const colour = pack((r << 16) | (g << 8) | b);
         unsigned* line = g_back + (size_t)y * g_width;
         for (int x = 0; x < g_width; ++x)
             line[x] = colour;
@@ -407,6 +457,8 @@ static void composite(void)
     if (g_dirty_x0 >= g_dirty_x1)
         return;
 
+    painter_reset();
+
     draw_desktop();
     for (int i = 0; i < g_stack_depth; ++i) {
         struct Window* window = window_by_id(g_stack[i]);
@@ -415,21 +467,31 @@ static void composite(void)
     }
     draw_cursor();
 
-    /* Out to the real screen, only the part that changed. */
+    /*
+     * Out to the real screen, only the part that changed, packing into whatever
+     * the framebuffer wants on the way. QEMU's is 0x00RRGGBB, which is what the
+     * back buffer already holds, so the common case stays a memcpy -- but the
+     * shifts come from the device and a machine that lays its pixels out
+     * differently still gets the right colours rather than blue faces.
+     */
+    int const direct = g_info.bytes_per_pixel == 4 && g_info.red_shift == 16
+        && g_info.green_shift == 8 && g_info.blue_shift == 0;
+
     for (int y = g_dirty_y0; y < g_dirty_y1; ++y) {
         const unsigned* source = g_back + (size_t)y * g_width + g_dirty_x0;
         unsigned char* destination
             = g_screen + (size_t)y * g_info.pitch + (size_t)g_dirty_x0 * g_info.bytes_per_pixel;
 
-        if (g_info.bytes_per_pixel == 4) {
+        if (direct) {
             memcpy(destination, source, (size_t)(g_dirty_x1 - g_dirty_x0) * 4);
-        } else {
-            for (int x = 0; x < g_dirty_x1 - g_dirty_x0; ++x) {
-                unsigned const value = source[x];
-                for (unsigned i = 0; i < g_info.bytes_per_pixel; ++i)
-                    destination[(size_t)x * g_info.bytes_per_pixel + i]
-                        = (unsigned char)(value >> (i * 8));
-            }
+            continue;
+        }
+
+        for (int x = 0; x < g_dirty_x1 - g_dirty_x0; ++x) {
+            unsigned const value = pack(source[x]);
+            for (unsigned i = 0; i < g_info.bytes_per_pixel; ++i)
+                destination[(size_t)x * g_info.bytes_per_pixel + i]
+                    = (unsigned char)(value >> (i * 8));
         }
     }
 
@@ -840,11 +902,10 @@ static int open_screen(void)
     return 0;
 }
 
-static void open_font(void)
+static void open_fonts(void)
 {
-    g_title_font = ui_font_open("/usr/share/fonts/sans.ttf", 14.0);
-    if (g_title_font == NULL)
-        fprintf(stderr, "wsys: no font at /usr/share/fonts/sans.ttf; titles will be blank\n");
+    if (ui_fonts_open(&g_fonts, "/usr/share/fonts") != 0)
+        fprintf(stderr, "wsys: no fonts in /usr/share/fonts; titles will be blank\n");
 }
 
 int main(int argc, char** argv)
@@ -875,7 +936,7 @@ int main(int argc, char** argv)
     int mouse = open("/dev/mouse0", O_RDONLY);
     int keys = open("/dev/kbdraw", O_RDONLY);
 
-    open_font();
+    open_fonts();
 
     g_cursor_x = g_width / 2;
     g_cursor_y = g_height / 2;
