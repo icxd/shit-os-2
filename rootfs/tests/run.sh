@@ -13,6 +13,8 @@ echo "--- lua and libc"
 lua /usr/share/lua/selftest.lua
 echo "--- graphics"
 gfxtest --check
+echo "--- window server"
+dash /tests/wsys.sh
 echo "--- file lifetime"
 lua /tests/uaf.lua
 echo "--- userland suite done"

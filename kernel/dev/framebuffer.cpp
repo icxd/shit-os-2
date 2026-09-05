@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // shit os 2 -- text on a linear framebuffer.
 
-#include <kernel/dev/font8x16.h>
 #include <kernel/dev/framebuffer.h>
 #include <kernel/lib/kstd.h>
 #include <kernel/lib/string.h>
+
+#include <shitos/font8x16.h>
 
 namespace kernel::dev {
 

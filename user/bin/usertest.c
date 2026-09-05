@@ -813,6 +813,31 @@ static void test_shared_memory(void)
     close(fd);
     unlink(path);
 
+    /*
+     * A read-only private mapping. This looks like a weaker case than the
+     * writable one below and is actually the one that broke: the kernel has to
+     * fill the pages in before handing them over, which it cannot do if it has
+     * already made them read-only. The symptom was a mapping full of zeroes
+     * that reported success -- the window server mapped its font that way and
+     * quietly drew nothing.
+     */
+    fd = open("/etc/rc", O_RDONLY);
+    if (fd >= 0) {
+        char first[8];
+        memset(first, 0, sizeof(first));
+        check(read(fd, first, 4) == 4, "reading the head of a file");
+        check(lseek(fd, 0, SEEK_SET) == 0, "rewinding it");
+
+        const char* readonly_map = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+        check(readonly_map != MAP_FAILED, "mapping a file PROT_READ, MAP_PRIVATE");
+        if (readonly_map != MAP_FAILED) {
+            check(memcmp(readonly_map, first, 4) == 0,
+                "a read-only private mapping holds the file, not zeroes");
+            munmap((void*)readonly_map, 4096);
+        }
+        close(fd);
+    }
+
     /* A private file mapping is a copy: writing to it must not touch the file. */
     fd = open("/etc/rc", O_RDONLY);
     if (fd >= 0) {
@@ -830,6 +855,144 @@ static void test_shared_memory(void)
     }
 }
 
+/*
+ * Named FIFOs. The point of them is that two processes which never shared a
+ * descriptor can still find each other, so the test forks a child that knows
+ * nothing but the path -- an inherited pipe would prove nothing.
+ */
+static void test_fifo(void)
+{
+    const char* path = "/tmp/fifo.sock";
+    unlink(path);
+
+    check(mkfifo(path, 0600) == 0, "creating a named fifo");
+
+    struct stat status;
+    check(stat(path, &status) == 0, "the fifo is visible by path");
+    check(S_ISFIFO(status.st_mode), "and stat says it is a fifo");
+
+    /* mkfifo over an existing name is EEXIST, not a second fifo. */
+    check(mkfifo(path, 0600) == -1 && errno == EEXIST, "mkfifo refuses an existing name");
+
+    /*
+     * The rendezvous. The child opens for writing and will block there until
+     * this process opens for reading -- so the parent deliberately opens
+     * second, which is the case that deadlocks if the pending-opener
+     * bookkeeping is wrong.
+     */
+    pid_t child = fork();
+    if (child == 0) {
+        int out = open(path, O_WRONLY);
+        if (out < 0)
+            _exit(1);
+        if (write(out, "hello fifo", 10) != 10)
+            _exit(2);
+        close(out);
+        _exit(0);
+    }
+    check(child > 0, "forking a writer");
+
+    int in = open(path, O_RDONLY);
+    check(in >= 0, "opening the read end after the writer was already waiting");
+
+    char buffer[32];
+    memset(buffer, 0, sizeof(buffer));
+    ssize_t got = read(in, buffer, sizeof(buffer) - 1);
+    check(got == 10, "reading what the unrelated process wrote");
+    check(strcmp(buffer, "hello fifo") == 0, "and the bytes are the same ones");
+
+    /* With the writer gone, the next read is end of file rather than a stall. */
+    check(read(in, buffer, sizeof(buffer)) == 0, "end of file once the writer closes");
+    close(in);
+
+    int status_code = 0;
+    waitpid(child, &status_code, 0);
+    check(WIFEXITED(status_code) && WEXITSTATUS(status_code) == 0, "the writer exited cleanly");
+
+    /* O_RDWR is both ends at once and must never block, which is how a server
+     * holds a fifo open across clients coming and going. */
+    int both = open(path, O_RDWR);
+    check(both >= 0, "opening a fifo O_RDWR does not block");
+    if (both >= 0) {
+        check(write(both, "x", 1) == 1, "writing to a fifo held open both ways");
+        char one = 0;
+        check(read(both, &one, 1) == 1 && one == 'x', "and reading it back");
+        close(both);
+    }
+
+    /* O_NONBLOCK is the escape hatch: a reader with no writer gets the
+     * descriptor rather than being held. */
+    int lonely = open(path, O_RDONLY | O_NONBLOCK);
+    check(lonely >= 0, "O_NONBLOCK skips the rendezvous");
+    if (lonely >= 0)
+        close(lonely);
+
+    unlink(path);
+}
+
+/*
+ * A signal has to reach a process that is asleep in a syscall. This looks like
+ * a strange thing to test until you have watched a `kill` return success
+ * against a process that then sat there forever: the pending bit was set and
+ * nobody was running to look at it.
+ *
+ * A blocked pipe read is the case that went wrong, so it is the case checked
+ * here, along with a FIFO -- which is the same code, reached the other way.
+ */
+static void test_signal_wakes_blocked_reader(void)
+{
+    int fds[2];
+    check(pipe(fds) == 0, "making a pipe to block on");
+
+    pid_t child = fork();
+    if (child == 0) {
+        close(fds[1]);
+        char byte = 0;
+        /* Nothing will ever be written, so this blocks until the signal. */
+        read(fds[0], &byte, 1);
+        _exit(7); /* only reached if the read returns rather than the signal killing us */
+    }
+    check(child > 0, "forking a reader that will block");
+
+    /* Long enough that the child is certainly asleep in the read rather than
+     * still on its way there. */
+    struct timespec settle = { 0, 60 * 1000 * 1000 };
+    nanosleep(&settle, NULL);
+
+    check(kill(child, SIGTERM) == 0, "signalling the blocked reader");
+
+    int status = 0;
+    check(waitpid(child, &status, 0) == child, "the blocked reader can be killed");
+    check(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM,
+        "and it died of the signal rather than returning");
+
+    close(fds[0]);
+    close(fds[1]);
+
+    /* The same, through a named FIFO, which is what the window server uses. */
+    const char* path = "/tmp/killme.fifo";
+    unlink(path);
+    check(mkfifo(path, 0600) == 0, "making a fifo to block on");
+
+    child = fork();
+    if (child == 0) {
+        int fd = open(path, O_RDWR);
+        if (fd < 0)
+            _exit(1);
+        char byte = 0;
+        read(fd, &byte, 1);
+        _exit(7);
+    }
+    check(child > 0, "forking a reader blocked on a fifo");
+
+    nanosleep(&settle, NULL);
+    check(kill(child, SIGTERM) == 0, "signalling it");
+    check(waitpid(child, &status, 0) == child, "a fifo reader can be killed too");
+    check(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM, "and by the signal sent");
+
+    unlink(path);
+}
+
 int main(int argc, char** argv, char** envp)
 {
     (void)envp;
@@ -839,6 +1002,8 @@ int main(int argc, char** argv, char** envp)
         return report_descriptors(atoi(argv[2]), atoi(argv[3]));
 
     test_shared_memory();
+    test_fifo();
+    test_signal_wakes_blocked_reader();
     test_fcntl();
     test_close_on_exec();
     test_rename();

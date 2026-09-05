@@ -245,8 +245,25 @@ void Scheduler::unblock(Thread* thread)
     InterruptLockGuard guard(s_lock);
     if (thread->m_state == ThreadState::Running || thread->m_state == ThreadState::Ready)
         return;
-    if (thread->wait_queue_node.linked)
+
+    /*
+     * The state test is not cosmetic. s_sleepers and every WaitQueue thread
+     * onto the *same* ListNode, so `linked` says only that the thread is on
+     * some list -- not which. Splicing a thread out of s_sleepers while it is
+     * really on a wait queue corrupts both lists.
+     *
+     * It never bit while the only caller was WaitQueue::wake_all, which takes
+     * the thread off its queue before calling here. Waking a thread from
+     * outside, so that a signal can reach it, is what made the difference:
+     * there the thread is still linked, and the wrong list got the surgery.
+     *
+     * Only a thread waiting on a deadline is in s_sleepers, and only that
+     * thread is in state Sleeping. One waiting on a queue removes itself when
+     * WaitQueue::wait returns, which is exactly where it should happen.
+     */
+    if (thread->m_state == ThreadState::Sleeping && thread->wait_queue_node.linked)
         s_sleepers.remove(thread);
+
     thread->m_state = ThreadState::Ready;
     s_run_queue.append(thread);
 }

@@ -46,6 +46,14 @@ if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR/user/bin" ]; then
     done
 fi
 
+# Fonts, from the dejavu port. Not executable, so the loop above skips them.
+if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR/user/share/fonts" ]; then
+    mkdir -p "$STAGING/usr/share/fonts"
+    for font in "$BUILD_DIR"/user/share/fonts/*.ttf; do
+        [ -f "$font" ] && cp "$font" "$STAGING/usr/share/fonts/"
+    done
+fi
+
 # Loadable modules, if there are any yet. Stage E fills this in.
 if [ -n "$BUILD_DIR" ] && [ -d "$BUILD_DIR/modules" ]; then
     mkdir -p "$STAGING/lib/modules"

@@ -35,17 +35,21 @@ Anything that only shows from ring 3 goes in `rootfs/tests`, which `/etc/rc`
 runs before the interactive shell comes up. A syscall regression belongs there
 rather than in the kernel's own tests.
 
-Three things are asked on the host instead, of the same source that ships,
+Four things are asked on the host instead, of the same source that ships,
 because each needs something the boot-time tests do not have. The libm and the
 regex engine need a mature implementation to disagree with, and glibc is right
 there. The allocator needs honest timing, and timing an allocator inside QEMU
 measures QEMU -- besides which heap corruption surfaces long after the call
-that caused it.
+that caused it. The TrueType rasteriser needs the address and
+undefined-behaviour sanitizers, which the target has no runtime for: it is
+array indexing driven by the contents of a file, and the bugs that matter are
+the ones that land somewhere harmless until they do not.
 
 ```sh
 ./tools/check-libm.sh
 ./tools/check-malloc.sh
 ./tools/check-regex.sh
+./tools/check-truetype.sh
 ```
 
 Each builds our source for the host with its symbols prefixed, so ours and
@@ -57,6 +61,14 @@ And the real test of the C library is software nobody here wrote:
 lua /usr/share/lua/selftest.lua      # inside the OS
 dash /tests/coreutils.sh             # 94 sbase programs
 ```
+
+The desktop cannot be checked this way -- nothing can tell whether a window
+looks right. `dash /tests/wsys.sh` proves the parts that are facts (a client
+connects, is given a buffer of the size it asked for, and taking it away
+removes the window), and for the rest there is
+`./tools/screenshot.sh --after 10 --keys "..." shot.png`, which boots the
+image, types at it and captures the framebuffer. Read the pixels rather than
+squinting at them: more than one bug here looked fine and was not.
 
 A port that needs patching is a bug report about our libc, not about the
 program. That has held for all three so far, and it is the rule.

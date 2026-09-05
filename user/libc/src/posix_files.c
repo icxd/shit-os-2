@@ -200,12 +200,7 @@ int chroot(const char* path)
 
 int mkfifo(const char* path, mode_t mode)
 {
-    (void)path;
-    (void)mode;
-    /* Pipes exist, but only the anonymous kind; there is no way to give one a
-     * name in the tree. */
-    errno = ENOSYS;
-    return -1;
+    return (int)__syscall_return(__syscall2(SYS_mkfifo, (long)path, (long)mode));
 }
 
 int mknod(const char* path, mode_t mode, dev_t device)

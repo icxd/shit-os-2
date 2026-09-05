@@ -541,18 +541,42 @@ ErrorOr<u64> sys_mmap(
      * would need to fetch.
      */
     if (!shared) {
-        TRY(process->address_space()->map_anonymous(virt(target), rounded, page_flags));
+        /*
+         * Writable while it is being filled in, whatever the caller asked for.
+         * A read-only mapping cannot be written to, and the contents have to
+         * get in somehow -- mapping it PROT_READ and then copying into it
+         * fails, which is exactly what happened the first time: a font opened
+         * for reading mapped successfully and arrived full of zeroes.
+         */
+        auto fill_flags = page_flags | mm::PageFlags::Writable;
+        TRY(process->address_space()->map_anonymous(virt(target), rounded, fill_flags));
+
+        // One page-sized bounce buffer for the whole loop. On the stack it
+        // would be a quarter of this thread's kernel stack.
+        auto* bounce = static_cast<u8*>(kmalloc(PAGE_SIZE));
+        if (bounce == nullptr) {
+            process->address_space()->unmap_range(virt(target), rounded);
+            return Error::from_errno(ENOMEM);
+        }
+
         for (usize done = 0; done < rounded; done += PAGE_SIZE) {
-            u8 page[PAGE_SIZE];
-            auto read = inode.read(offset + done, page, PAGE_SIZE);
+            auto read = inode.read(offset + done, bounce, PAGE_SIZE);
             usize const got = read.is_error() ? 0 : read.value();
             if (got < PAGE_SIZE)
-                memset(page + got, 0, PAGE_SIZE - got);
-            if (auto copied = copy_to_user(target + done, page, PAGE_SIZE); copied.is_error()) {
+                memset(bounce + got, 0, PAGE_SIZE - got);
+
+            if (auto copied = copy_to_user(target + done, bounce, PAGE_SIZE); copied.is_error()) {
+                kfree(bounce);
                 process->address_space()->unmap_range(virt(target), rounded);
                 return copied.error();
             }
         }
+        kfree(bounce);
+
+        // Now down to what was actually asked for.
+        if ((protection & PROT_WRITE) == 0)
+            TRY(process->address_space()->protect(virt(target), rounded, page_flags));
+
         return target;
     }
 
@@ -1314,6 +1338,32 @@ ErrorOr<u64> sys_fchmodat(InterruptFrame&, u64 directory, u64 path_pointer, u64 
     return static_cast<u64>(0);
 }
 
+/*
+ * A FIFO is the only kind of file a process can create that is not storage --
+ * a name in the tree with a pipe behind it. It exists here because two
+ * unrelated processes have no other way to find each other: an anonymous pipe
+ * has to be inherited, and inheritance means they were related.
+ */
+ErrorOr<u64> sys_mkfifo(InterruptFrame&, u64 path_pointer, u64 mode, u64, u64, u64, u64)
+{
+    char path[fs::PATH_MAX_LENGTH];
+    TRY(copy_string_from_user(path, path_pointer, sizeof(path)));
+
+    auto* process = Process::current();
+    auto* base = process->working_directory();
+
+    if (!fs::resolve(path, base).is_error())
+        return Error::from_errno(EEXIST);
+
+    char name[fs::FILENAME_MAX_LENGTH];
+    auto* parent = TRY(fs::resolve_parent(path, base, name));
+    if (parent->filesystem() != nullptr && parent->filesystem()->is_read_only())
+        return Error::from_errno(EROFS);
+
+    TRY(parent->create(name, fs::InodeType::Fifo, static_cast<u32>(mode) & ~process->umask()));
+    return static_cast<u64>(0);
+}
+
 ErrorOr<u64> sys_ftruncate(InterruptFrame&, u64 fd, u64 length, u64, u64, u64, u64)
 {
     auto* description = TRY(description_for(static_cast<int>(fd)));
@@ -1547,6 +1597,7 @@ SyscallHandler const POSIX_SYSCALLS[SYS_MAX_POSIX] = {
     [SYS_unlinkat] = sys_unlinkat,
     [SYS_mkdirat] = sys_mkdirat,
     [SYS_fchmodat] = sys_fchmodat,
+    [SYS_mkfifo] = sys_mkfifo,
 };
 
 #pragma clang diagnostic pop

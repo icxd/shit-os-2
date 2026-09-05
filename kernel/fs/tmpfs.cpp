@@ -12,6 +12,12 @@ namespace kernel::fs {
 
 TmpfsInode::~TmpfsInode()
 {
+    if (m_fifo != nullptr) {
+        m_fifo->~PipeBuffer();
+        kfree(m_fifo);
+        m_fifo = nullptr;
+    }
+
     release_pages_from(0);
     // Give back the reference this directory held on each child rather than
     // destroying them: a child a process still has open outlives its parent.
@@ -61,6 +67,8 @@ void TmpfsInode::release_pages_from(usize first_index)
 
 ErrorOr<usize> TmpfsInode::read(u64 offset, void* buffer, usize length)
 {
+    if (m_fifo != nullptr)
+        return m_fifo->read(buffer, length);
     if (m_type == InodeType::Directory)
         return Error::from_errno(EISDIR);
     if (offset >= m_size)
@@ -85,6 +93,8 @@ ErrorOr<usize> TmpfsInode::read(u64 offset, void* buffer, usize length)
 
 ErrorOr<usize> TmpfsInode::write(u64 offset, void const* buffer, usize length)
 {
+    if (m_fifo != nullptr)
+        return m_fifo->write(buffer, length);
     if (m_type == InodeType::Directory)
         return Error::from_errno(EISDIR);
     if (length == 0)
@@ -156,6 +166,40 @@ ErrorOr<PhysAddr> TmpfsInode::physical_page(u64 offset, bool for_write)
     return m_pages[index];
 }
 
+bool TmpfsInode::can_read_without_blocking() const
+{
+    return m_fifo == nullptr ? true : m_fifo->can_read_without_blocking();
+}
+
+bool TmpfsInode::can_write_without_blocking() const
+{
+    return m_fifo == nullptr ? true : m_fifo->can_write_without_blocking();
+}
+
+bool TmpfsInode::is_hung_up() const
+{
+    return m_fifo == nullptr ? false : m_fifo->is_hung_up();
+}
+
+void TmpfsInode::on_description_opened(int flags)
+{
+    if (m_fifo != nullptr)
+        m_fifo->opened(flags);
+}
+
+void TmpfsInode::on_description_closed(int flags)
+{
+    if (m_fifo != nullptr)
+        m_fifo->closed(flags);
+}
+
+ErrorOr<void> TmpfsInode::await_peer(int flags)
+{
+    if (m_fifo == nullptr)
+        return {};
+    return m_fifo->await_peer(flags);
+}
+
 ErrorOr<Inode*> TmpfsInode::lookup(char const* name)
 {
     if (m_type != InodeType::Directory)
@@ -214,6 +258,15 @@ ErrorOr<Inode*> TmpfsInode::create(char const* name, InodeType type, u32 mode)
     if (child == nullptr)
         return Error::from_errno(ENOMEM);
     new (child) TmpfsInode(m_filesystem, type, mode);
+
+    if (type == InodeType::Fifo) {
+        child->m_fifo = static_cast<PipeBuffer*>(kzalloc(sizeof(PipeBuffer)));
+        if (child->m_fifo == nullptr) {
+            child->unref();
+            return Error::from_errno(ENOMEM);
+        }
+        new (child->m_fifo) PipeBuffer();
+    }
 
     strncpy(child->m_name, name, FILENAME_MAX_LENGTH - 1);
     child->m_parent = this;

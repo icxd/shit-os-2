@@ -143,6 +143,11 @@ ErrorOr<int> Inode::ioctl(u32, void*)
     return Error::from_errno(ENOTTY);
 }
 
+ErrorOr<void> Inode::await_peer(int)
+{
+    return {};
+}
+
 ErrorOr<PhysAddr> Inode::physical_page(u64, bool)
 {
     // ENODEV is what mmap reports for a file whose filesystem cannot back a
@@ -473,6 +478,18 @@ ErrorOr<FileDescription*> open(char const* path, int flags, u32 mode, Inode* bas
     if ((flags & O_TRUNC) != 0 && (flags & O_ACCMODE) != O_RDONLY
         && inode->type() == InodeType::Regular)
         TRY(inode->truncate(0));
+
+    /*
+     * A FIFO is a meeting point: opening one end waits for the other, so a
+     * client may start before its server is listening and simply block. This
+     * happens before the description exists, because a description that has
+     * been created has already been counted as an end.
+     *
+     * O_NONBLOCK skips the wait, which is the escape hatch for a caller that
+     * would rather find out than be held.
+     */
+    if (inode->type() == InodeType::Fifo && (flags & O_NONBLOCK) == 0)
+        TRY(inode->await_peer(flags));
 
     auto* description = static_cast<FileDescription*>(kmalloc(sizeof(FileDescription)));
     if (description == nullptr)

@@ -40,10 +40,22 @@ What exists, what is next, and what is deliberately not being done yet.
 - A **POSIX regular expression engine** in the libc, written from the
   specification. sbase's `util.h` includes `<regex.h>`, so every one of those
   ninety-four programs needed it. Checked against glibc over 6498 cases.
-- 198 kernel self-test assertions at every boot, 309 more from ring 3 run by
-  `/etc/rc` before the shell, and three host-side differential checks against
-  glibc -- libm accuracy in ULPs, the allocator, and the regex engine.
+- 220 kernel self-test assertions at every boot, 379 more from ring 3 run by
+  `/etc/rc` before the shell, and four host-side checks -- libm accuracy in
+  ULPs, the allocator, the regex engine against glibc, and the TrueType
+  rasteriser under the sanitizers.
 
+- **A widget toolkit, and a TrueType rasteriser under it.**
+  `user/libui/truetype.c` parses the tables and rasterises quadratic outlines
+  with anti-aliasing, written from the specification -- no FreeType, no stb.
+  Above it, a retained-mode toolkit: a widget tree, a layout pass, boxes,
+  labels, buttons, checkboxes, text fields with a caret, hover and focus.
+- **A desktop.** `user/wsys/` is a window server running as an ordinary
+  process -- real windows with titlebars, dragging, stacking, focus and
+  click-to-raise. Clients reach it over named FIFOs and draw into shared
+  memory both sides map, so a window's pixels are never sent anywhere; the
+  compositor reads them where they already are, into a back buffer, and blits
+  only the rectangle that changed.
 - **Graphics, from the bottom up.** `/dev/fb0` hands a process the real
   framebuffer through `mmap` rather than a copy of it; a PS/2 mouse driver is
   the third loadable module and needed no ABI additions at all, which is the
@@ -185,11 +197,11 @@ check would have gone.
 - Userspace drivers. The module ABI was designed so a driver can move behind
   IPC without being rewritten; nothing has actually made that move yet.
 - Networking. A long way out.
-- The rest of the desktop: a compositor, a widget toolkit, a terminal
-  emulator. The kernel side of it is done -- shared memory, the framebuffer,
-  and both input devices. What is missing above that is named FIFOs for the
-  client-server channel, a TrueType rasteriser so text does not look like
-  1985, and pseudo-terminals so a shell can live in a window.
+- The rest of the desktop. Windows do not resize, and there is no way for a
+  client to ask to be a different size. There is no scroll view, no list, no
+  menu. And there is no terminal emulator, because there are no
+  pseudo-terminals -- which is the single thing that would make the desktop
+  worth using rather than worth looking at.
 
 ## Not planned
 

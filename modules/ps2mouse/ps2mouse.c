@@ -349,7 +349,15 @@ static ModuleResult setup_mouse(const KernelApi* kernel)
         return MODULE_ERR_IO;
     }
 
-    config |= PS2_CONFIG_AUX_INTERRUPT;
+    /*
+     * The clock on, but *not* the interrupt. Every reply in the conversation
+     * below would otherwise raise IRQ 12 before there is a handler for it, and
+     * the kernel quite rightly masks a line that fires with nothing behind it.
+     * It came back when the handler registered, so this was only ever a scary
+     * warning -- but a driver that provokes one is a driver that is doing
+     * something wrong.
+     */
+    config &= (u8)~PS2_CONFIG_AUX_INTERRUPT;
     config &= (u8)~PS2_CONFIG_AUX_CLOCK_DISABLED;
 
     if (!write_command(kernel, PS2_COMMAND_WRITE_CONFIG) || !write_data(kernel, config)) {
@@ -384,6 +392,19 @@ static ModuleResult setup_mouse(const KernelApi* kernel)
  * exchange. It is switched back on at the end, including on every failure
  * path, because leaving it off would cost the machine its console.
  */
+/* Turned on last, once there is somewhere for the interrupts to go. */
+static bool enable_aux_interrupt(const KernelApi* kernel)
+{
+    if (!write_command(kernel, PS2_COMMAND_READ_CONFIG))
+        return false;
+    u8 config = 0;
+    if (!read_data(kernel, &config))
+        return false;
+
+    config |= PS2_CONFIG_AUX_INTERRUPT;
+    return write_command(kernel, PS2_COMMAND_WRITE_CONFIG) && write_data(kernel, config);
+}
+
 static ModuleResult mouse_init(const KernelApi* kernel)
 {
     if (kernel->abi_version < SHITOS_MODULE_ABI_VERSION)
@@ -403,24 +424,39 @@ static ModuleResult mouse_init(const KernelApi* kernel)
         (void)kernel->inb(PS2_DATA_PORT);
 
     ModuleResult status = setup_mouse(kernel);
-
-    /* Unconditionally, and last: this also clears the port-1-disabled bit that
-     * the command above set in the configuration byte. */
-    (void)write_command(kernel, PS2_COMMAND_ENABLE_KEYBOARD);
-
-    if (status != MODULE_OK)
+    if (status != MODULE_OK) {
+        (void)write_command(kernel, PS2_COMMAND_ENABLE_KEYBOARD);
         return status;
+    }
 
     g_mouse.readers = kernel->waitqueue_create();
-    if (g_mouse.readers == 0)
+    if (g_mouse.readers == 0) {
+        (void)write_command(kernel, PS2_COMMAND_ENABLE_KEYBOARD);
         return MODULE_ERR_NO_MEMORY;
+    }
 
     ModuleResult result = kernel->irq_register(MOUSE_IRQ, mouse_irq, &g_mouse);
     if (result != MODULE_OK) {
         kernel->waitqueue_destroy(g_mouse.readers);
         g_mouse.readers = 0;
+        (void)write_command(kernel, PS2_COMMAND_ENABLE_KEYBOARD);
         return result;
     }
+
+    /* Now, and only now, is there somewhere for an interrupt to land. */
+    if (!enable_aux_interrupt(kernel)) {
+        kernel->irq_unregister(MOUSE_IRQ, &g_mouse);
+        kernel->waitqueue_destroy(g_mouse.readers);
+        g_mouse.readers = 0;
+        (void)write_command(kernel, PS2_COMMAND_ENABLE_KEYBOARD);
+        kernel->log(LOG_ERROR, "ps2mouse", "cannot arm the aux interrupt");
+        return MODULE_ERR_IO;
+    }
+
+    /* The keyboard comes back on here rather than earlier: enabling it also
+     * clears the port-1-disabled bit, and the configuration writes above would
+     * have put it straight back. */
+    (void)write_command(kernel, PS2_COMMAND_ENABLE_KEYBOARD);
 
     DeviceDescriptor device = {
         .name = "mouse0",

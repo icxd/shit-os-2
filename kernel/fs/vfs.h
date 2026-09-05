@@ -117,6 +117,12 @@ public:
      */
     virtual ErrorOr<PhysAddr> physical_page(u64 offset, bool for_write);
 
+    /*
+     * Called by open() *before* the description exists, so that a FIFO can
+     * make the caller wait for the other end. Everything else returns at once.
+     */
+    virtual ErrorOr<void> await_peer(int flags);
+
     // Called when a FileDescription onto this inode is created and destroyed.
     // Pipes use this to count their live ends: fork() shares a description
     // rather than duplicating it, so a description is exactly one "end".

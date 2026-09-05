@@ -48,5 +48,5 @@ for c in range(N):
     label = f"  // 0x{c:02x} '{ch}'" if ch else f"  // 0x{c:02x}"
     out.append("    { %s },%s" % (row, label))
 out.append("};\n\n} // namespace kernel::dev")
-open("kernel/dev/font8x16.h", "w").write("\n".join(out) + "\n")
-print("wrote kernel/dev/font8x16.h", file=sys.stderr)
+open("include/shitos/font8x16.h", "w").write("\n".join(out) + "\n")
+print("wrote include/shitos/font8x16.h", file=sys.stderr)

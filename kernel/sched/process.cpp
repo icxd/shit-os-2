@@ -554,8 +554,32 @@ void Process::raise_signal(int signal)
     //
     // Delivery still happens afterwards for SIGCONT: the bit stays set so a
     // caught handler runs once the process is going again.
-    if (m_is_stopped && (signal == SIGCONT || signal == SIGKILL))
+    if (m_is_stopped && (signal == SIGCONT || signal == SIGKILL)) {
         resume();
+        return;
+    }
+
+    /*
+     * Setting the bit is not enough. A signal is only ever noticed by a
+     * process that is running, so one asleep on a wait queue has to be woken
+     * to look at it -- otherwise the bit sits there and nothing reads it.
+     *
+     * Without this a process blocked reading a pipe, a FIFO or a device could
+     * not be killed at all: `kill` returned success, the signal was recorded,
+     * and the process slept through it forever. It went unnoticed for a long
+     * time because the paths that are usually tested -- a terminal read, a
+     * wait for a child -- are woken by something else anyway.
+     *
+     * Every wait loop in the kernel re-tests its own condition after waking
+     * and asks has_pending_signals(), so waking a process whose signal turns
+     * out to be masked costs one trip around a loop and nothing else.
+     */
+    if (m_main_thread == nullptr)
+        return;
+
+    auto const state = m_main_thread->state();
+    if (state == ThreadState::Blocked || state == ThreadState::Sleeping)
+        Scheduler::unblock(m_main_thread);
 }
 
 // Neither can be blocked. A process that could block SIGKILL would be

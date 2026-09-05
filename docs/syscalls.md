@@ -79,6 +79,7 @@ the top bit set.
 | 47 | `unlinkat` | `(int dirfd, const char* path, int flags)` | `AT_REMOVEDIR` selects `rmdir` semantics; without it a directory is `EISDIR`. |
 | 48 | `mkdirat` | `(int dirfd, const char* path, mode_t mode)` | |
 | 49 | `fchmodat` | `(int dirfd, const char* path, mode_t mode, int flags)` | |
+| 50 | `mkfifo` | `(const char* path, mode_t mode)` | A name in the tree with a pipe behind it. Opening one end blocks until the other opens, unless `O_NONBLOCK`; `O_RDWR` is both ends and never blocks. |
 
 The `at` family resolves against the descriptor's inode rather than against a
 rebuilt path, which is the entire point of it: `du`, `rm -r` and `cp -r`

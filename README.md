@@ -29,12 +29,14 @@ It is still not useful. It is now genuinely an operating system.
 | **Scheduling** | Preemptive round-robin at 250 Hz, per-CPU run queue behind a `gs` accessor, wait queues, sleeping, zombie reaping |
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
 | **Graphics** | `/dev/fb0` mapped straight into a process, `/dev/mouse0`, `/dev/kbdraw` with press and release events |
+| **Desktop** | A window server in userland: real windows, titlebars, dragging, stacking, focus, click-to-raise. Clients draw into shared memory, so no pixel is ever sent as a message |
+| **Toolkit** | Our own TrueType rasteriser, and a retained-mode widget library on top of it: boxes that lay out, labels, buttons, checkboxes, text fields, hover and focus |
 | **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard, PS/2 mouse and CMOS clock drivers, written in C |
 | **Userland** | Ring 3, 50 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, the `at` family, job control with process groups and sessions, a TTY with canonical line discipline |
 | **libc** | Our own: stdio, an allocator that is not linear in the heap, a libm checked in ULPs, and a POSIX regex engine |
 | **Programs** | 103 in `/bin`. Ours are `init` `sh` `ps` `free` `lsmod` `stty`; the coreutils come from sbase |
 | **Ports** | **Lua 5.4**, **dash** and **sbase**, all unpatched, built against our libc |
-| **Tests** | 220 assertions in the kernel at every boot, 343 more from ring 3 run by `/etc/rc` before the shell, and three host-side differential checks against glibc |
+| **Tests** | 220 assertions in the kernel at every boot, 379 more from ring 3 run by `/etc/rc` before the shell, and four host-side checks that need something the target cannot provide |
 
 The shell has builtins, `PATH` lookup, pipelines, `<` `>` `>>` redirection and
 quoting. `^C` interrupts the foreground command. A null dereference in a
@@ -113,6 +115,65 @@ segfaulted on `0x1`. That bug was as old as the libc.
 
 The other five, and why each one only showed up now, are in
 [the roadmap](docs/roadmap.md).
+
+## It has a window manager
+
+![The desktop](docs/desktop.png)
+
+`user/wsys/` is a window server, and it is an ordinary process. It has no
+privilege the shell does not: it is the window server only because it is the
+one holding `/dev/fb0`, and when it exits the kernel hands the screen back to
+the console. That is the whole of the arrangement, and it is why none of this
+is in the kernel.
+
+Clients talk to it over named FIFOs -- fixed-size tagged structs, never parsed,
+because a FIFO write below `PIPE_BUF` is atomic and so a message cannot arrive
+in halves. **No pixel is ever sent as a message.** Each window is a tmpfs file
+that the client and the server both `mmap` shared, so drawing is a store to
+memory and "I have finished" is 64 bytes. Compositing is then a copy from one
+mapping to another, into a back buffer, and only the rectangle that changed is
+blitted to the screen.
+
+Windows drag by the titlebar, raise on click, close from the button, and the
+focused one gets the keyboard. A client that dies takes its window with it and
+leaves the server standing.
+
+Writing it found the sort of bug a screenshot catches and a test does not:
+opening a second window changed which titlebar was drawn as focused, but only
+the *new* window's rectangle was damaged -- so the first window kept its
+focused-blue titlebar on screen even though the back buffer had it grey, and
+the desktop showed two focused windows. Focus is now reconciled in one place
+that every path goes through, because a rule each caller must remember is a
+rule that gets forgotten.
+
+## It has a widget toolkit
+
+`user/libui/` is where the "good UI library" was supposed to go, and the part
+that decides whether it is one is the text.
+
+**The TrueType rasteriser is ours.** `truetype.c` parses head, maxp, hhea,
+hmtx, loca, glyf, cmap and kern, walks the quadratic outlines, flattens them
+by curvature, and fills them with a scanline rasteriser using the non-zero
+winding rule, five sub-scanlines per pixel row and exact fractional coverage
+horizontally. No FreeType and no stb_truetype. The font itself is fetched and
+checksummed like every other port.
+
+```
+/ $ uidemo &
+```
+
+Above that is a retained-mode toolkit: a widget tree, a layout pass that runs
+when something changes rather than every frame, and damage-driven repaint. Box
+layout with expanding children, and enough controls to build something --
+labels, buttons, checkboxes, text fields with a real caret, hover and focus.
+`user/wsys/uidemo.c` is the whole of an application; compare it with
+`wsysdemo.c`, which does far less against the raw protocol.
+
+`tools/check-truetype.sh` builds the rasteriser for the host under the address
+and undefined-behaviour sanitizers and renders every glyph in the font, which
+is the check that matters: a rasteriser is array indexing driven by the
+contents of a file, and the interesting bugs are one-past-the-end writes that
+happen to land somewhere harmless.
 
 ## Building
 

@@ -53,10 +53,10 @@ target_include_directories(shitos_libc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/libc
 # Links a static ET_EXEC at a fixed base. Everything lands in build/user/bin,
 # which is where mkinitrd looks for /bin.
 function(add_shitos_program PROGRAM_NAME)
-    cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;LIBRARIES" ${ARGN})
 
     add_executable(${PROGRAM_NAME} ${ARG_SOURCES})
-    target_link_libraries(${PROGRAM_NAME} PRIVATE shitos_libc shitos_user_flags)
+    target_link_libraries(${PROGRAM_NAME} PRIVATE shitos_libc shitos_user_flags ${ARG_LIBRARIES})
     target_link_options(${PROGRAM_NAME} PRIVATE
         -nostdlib
         -static
@@ -75,4 +75,6 @@ function(add_shitos_program PROGRAM_NAME)
     set_property(GLOBAL APPEND PROPERTY SHITOS_IMAGE_FILES "$<TARGET_FILE:${PROGRAM_NAME}>")
 endfunction()
 
+add_subdirectory(libui)
 add_subdirectory(bin)
+add_subdirectory(wsys)

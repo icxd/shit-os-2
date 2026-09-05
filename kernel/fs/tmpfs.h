@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <kernel/fs/pipe.h>
 #include <kernel/fs/vfs.h>
 #include <kernel/lib/vector.h>
 #include <kernel/mm/physical.h>
@@ -34,6 +35,15 @@ public:
     ErrorOr<usize> write(u64 offset, void const* buffer, usize length) override;
     ErrorOr<void> truncate(u64 size) override;
     ErrorOr<PhysAddr> physical_page(u64 offset, bool for_write) override;
+
+    // A FIFO created here is a name in the tree and a pipe behind it. All of
+    // these forward when there is one and behave as a regular file when not.
+    bool can_read_without_blocking() const override;
+    bool can_write_without_blocking() const override;
+    bool is_hung_up() const override;
+    void on_description_opened(int flags) override;
+    void on_description_closed(int flags) override;
+    ErrorOr<void> await_peer(int flags) override;
 
     ErrorOr<Inode*> lookup(char const* name) override;
     ErrorOr<bool> read_directory(usize index, DirectoryEntry& out) override;
@@ -57,6 +67,11 @@ private:
     char m_name[FILENAME_MAX_LENGTH] {};
     Vector<PhysAddr> m_pages;
     Vector<TmpfsInode*> m_children;
+
+    // Non-null exactly when this entry is a FIFO. Held by pointer rather than
+    // by value because a PipeBuffer is four kilobytes and every directory
+    // entry in the filesystem would otherwise carry one.
+    PipeBuffer* m_fifo { nullptr };
 };
 
 class TmpfsFileSystem final : public FileSystem {

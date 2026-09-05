@@ -140,6 +140,26 @@ jobs:
         # a mature implementation the same several thousand questions.
         run: ./tools/check-regex.sh
 
+  truetype:
+    name: truetype rasteriser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang, the sanitizer runtime and a font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm libclang-rt-dev fonts-dejavu-core
+
+      - name: Rasterise every glyph under the sanitizers
+        # A rasteriser is array indexing driven by the contents of a file, so
+        # the failures worth catching are one-past-the-end writes that land
+        # somewhere harmless in QEMU and are invisible until they do not.
+        run: ./tools/check-truetype.sh
+
   format:
     name: formatting
     runs-on: ubuntu-latest
