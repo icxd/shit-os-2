@@ -106,6 +106,17 @@ public:
 
     virtual ErrorOr<int> ioctl(u32 request, void* argument);
 
+    /*
+     * The physical page backing `offset`, for mmap. Returning one is a promise
+     * that the page will not move for as long as the inode lives, because a
+     * mapping of it cannot be recalled -- so only filesystems that own whole
+     * pages can answer, and everything else keeps the default ENODEV.
+     *
+     * `for_write` lets a file that allocates lazily fault a page in; a device
+     * with fixed memory behind it ignores it.
+     */
+    virtual ErrorOr<PhysAddr> physical_page(u64 offset, bool for_write);
+
     // Called when a FileDescription onto this inode is created and destroyed.
     // Pipes use this to count their live ends: fork() shares a description
     // rather than duplicating it, so a description is exactly one "end".

@@ -2,47 +2,61 @@
 // shit os 2 -- a writable filesystem that lives in the heap.
 
 #include <kernel/fs/tmpfs.h>
+#include <kernel/lib/kstd.h>
 #include <kernel/lib/new.h>
 #include <kernel/lib/string.h>
 #include <kernel/mm/heap.h>
+#include <kernel/mm/physical.h>
 
 namespace kernel::fs {
 
 TmpfsInode::~TmpfsInode()
 {
-    kfree(m_data);
+    release_pages_from(0);
     // Give back the reference this directory held on each child rather than
     // destroying them: a child a process still has open outlives its parent.
     for (auto* child : m_children)
         child->unref();
 }
 
-ErrorOr<void> TmpfsInode::ensure_capacity(usize wanted)
+namespace {
+
+constexpr usize pages_for(u64 bytes)
 {
-    if (wanted <= m_capacity)
-        return {};
+    return static_cast<usize>((bytes + PAGE_SIZE - 1) / PAGE_SIZE);
+}
 
-    // Double until it fits, so appending a byte at a time to a large file does
-    // not turn into a quadratic copy.
-    usize new_capacity = m_capacity == 0 ? 64 : m_capacity;
-    while (new_capacity < wanted)
-        new_capacity *= 2;
+} // namespace
 
-    auto* replacement = static_cast<u8*>(kmalloc(new_capacity));
-    if (replacement == nullptr)
-        return Error::from_errno(ENOMEM);
-
-    if (m_data != nullptr) {
-        memcpy(replacement, m_data, static_cast<usize>(m_size));
-        kfree(m_data);
+ErrorOr<void> TmpfsInode::ensure_pages(u64 wanted_bytes)
+{
+    usize const wanted = pages_for(wanted_bytes);
+    while (m_pages.size() < wanted) {
+        // Zeroed, not merely allocated: these pages go straight into a user
+        // address space on the next mmap, and whatever was in them before
+        // belonged to somebody else.
+        auto page = mm::allocate_zeroed_page();
+        if (page.is_error()) {
+            // Give back what this call added, so a failed write does not leave
+            // the file owning pages it does not account for in m_size.
+            release_pages_from(pages_for(m_size));
+            return page.error();
+        }
+        if (auto appended = m_pages.append(page.value()); appended.is_error()) {
+            mm::free_page(page.value());
+            release_pages_from(pages_for(m_size));
+            return appended.error();
+        }
     }
-    // Zero the tail so a write past the end followed by a read of the gap
-    // returns zeroes rather than whatever the heap had.
-    memset(replacement + m_size, 0, new_capacity - static_cast<usize>(m_size));
-
-    m_data = replacement;
-    m_capacity = new_capacity;
     return {};
+}
+
+void TmpfsInode::release_pages_from(usize first_index)
+{
+    while (m_pages.size() > first_index) {
+        mm::free_page(m_pages.last());
+        m_pages.remove_at(m_pages.size() - 1);
+    }
 }
 
 ErrorOr<usize> TmpfsInode::read(u64 offset, void* buffer, usize length)
@@ -53,8 +67,20 @@ ErrorOr<usize> TmpfsInode::read(u64 offset, void* buffer, usize length)
         return static_cast<usize>(0);
 
     usize const to_copy = min(length, static_cast<usize>(m_size - offset));
-    memcpy(buffer, m_data + offset, to_copy);
-    return to_copy;
+    auto* out = static_cast<u8*>(buffer);
+
+    usize copied = 0;
+    while (copied < to_copy) {
+        u64 const position = offset + copied;
+        usize const index = static_cast<usize>(position / PAGE_SIZE);
+        usize const within = static_cast<usize>(position % PAGE_SIZE);
+        usize const run = min(to_copy - copied, PAGE_SIZE - within);
+
+        auto* page = static_cast<u8*>(phys_to_virt(m_pages[index]));
+        memcpy(out + copied, page + within, run);
+        copied += run;
+    }
+    return copied;
 }
 
 ErrorOr<usize> TmpfsInode::write(u64 offset, void const* buffer, usize length)
@@ -64,13 +90,24 @@ ErrorOr<usize> TmpfsInode::write(u64 offset, void const* buffer, usize length)
     if (length == 0)
         return static_cast<usize>(0);
 
-    TRY(ensure_capacity(static_cast<usize>(offset) + length));
+    TRY(ensure_pages(offset + length));
 
-    // Writing past the end leaves a hole, which POSIX says reads as zeroes.
-    if (offset > m_size)
-        memset(m_data + m_size, 0, static_cast<usize>(offset - m_size));
+    // A write past the end leaves a hole, which POSIX says reads as zeroes.
+    // Nothing needs doing for it: the pages arrived zeroed.
+    auto const* in = static_cast<u8 const*>(buffer);
 
-    memcpy(m_data + offset, buffer, length);
+    usize written = 0;
+    while (written < length) {
+        u64 const position = offset + written;
+        usize const index = static_cast<usize>(position / PAGE_SIZE);
+        usize const within = static_cast<usize>(position % PAGE_SIZE);
+        usize const run = min(length - written, PAGE_SIZE - within);
+
+        auto* page = static_cast<u8*>(phys_to_virt(m_pages[index]));
+        memcpy(page + within, in + written, run);
+        written += run;
+    }
+
     m_size = max<u64>(m_size, offset + length);
     touch();
     return length;
@@ -82,12 +119,41 @@ ErrorOr<void> TmpfsInode::truncate(u64 size)
         return Error::from_errno(EISDIR);
 
     if (size > m_size) {
-        TRY(ensure_capacity(static_cast<usize>(size)));
-        memset(m_data + m_size, 0, static_cast<usize>(size - m_size));
+        TRY(ensure_pages(size));
+    } else if (size < m_size) {
+        // Clear the tail of the last surviving page: shrinking and growing
+        // again must not bring the old bytes back.
+        usize const keep = pages_for(size);
+        if (usize const within = static_cast<usize>(size % PAGE_SIZE); within != 0 && keep > 0) {
+            auto* page = static_cast<u8*>(phys_to_virt(m_pages[keep - 1]));
+            memset(page + within, 0, PAGE_SIZE - within);
+        }
+        release_pages_from(keep);
     }
+
     m_size = size;
     touch();
     return {};
+}
+
+/*
+ * What makes a file here mappable. The page has to already exist -- POSIX says
+ * a shared mapping is of a file you have sized first, and reading past the end
+ * of one is the caller's mistake rather than something to paper over by
+ * allocating.
+ */
+ErrorOr<PhysAddr> TmpfsInode::physical_page(u64 offset, bool for_write)
+{
+    if (m_type == InodeType::Directory)
+        return Error::from_errno(EISDIR);
+
+    usize const index = static_cast<usize>(offset / PAGE_SIZE);
+    if (for_write)
+        TRY(ensure_pages(offset + PAGE_SIZE));
+    if (index >= m_pages.size())
+        return Error::from_errno(ENXIO);
+
+    return m_pages[index];
 }
 
 ErrorOr<Inode*> TmpfsInode::lookup(char const* name)

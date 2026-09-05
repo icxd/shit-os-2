@@ -288,8 +288,13 @@ void AddressSpace::destroy_user_mappings()
                     u64* pt = table_at(pd_entry);
                     for (usize pt_index = 0; pt_index < ENTRIES_PER_TABLE; ++pt_index) {
                         u64 const pt_entry = pt[pt_index];
-                        if (pt_entry & static_cast<u64>(PageFlags::Present))
-                            free_page(phys(pt_entry & ADDRESS_MASK));
+                        if (!(pt_entry & static_cast<u64>(PageFlags::Present)))
+                            continue;
+                        // Foreign frames are mapped here but owned elsewhere:
+                        // drop the entry, leave the memory alone.
+                        if (pt_entry & static_cast<u64>(PageFlags::Foreign))
+                            continue;
+                        free_page(phys(pt_entry & ADDRESS_MASK));
                     }
                     free_page(phys(pd_entry & ADDRESS_MASK));
                 }
@@ -391,6 +396,24 @@ ErrorOr<AddressSpace*> AddressSpace::clone_user_space() const
                     u64 const address = (pml4_index << 39) | (pdpt_index << 30) | (pd_index << 21)
                         | (pt_index << 12);
 
+                    auto const flags = static_cast<PageFlags>(pt_entry & ~ADDRESS_MASK);
+
+                    // A shared mapping is shared with the child too: POSIX says
+                    // a MAP_SHARED region survives fork as the same memory, and
+                    // copying device memory would be meaningless anyway. Point
+                    // the child at the same frame and mark it foreign there as
+                    // well, so neither side frees it.
+                    if (pt_entry & static_cast<u64>(PageFlags::Foreign)) {
+                        auto const frame = phys(pt_entry & ADDRESS_MASK);
+                        if (auto mapped = copy->map(virt(address), frame, flags);
+                            mapped.is_error()) {
+                            copy->destroy_user_mappings();
+                            kfree(copy);
+                            return mapped.error();
+                        }
+                        continue;
+                    }
+
                     auto frame = allocate_page();
                     if (frame.is_error()) {
                         copy->destroy_user_mappings();
@@ -400,8 +423,6 @@ ErrorOr<AddressSpace*> AddressSpace::clone_user_space() const
 
                     memcpy(phys_to_virt(frame.value()), phys_to_virt(phys(pt_entry & ADDRESS_MASK)),
                         PAGE_SIZE);
-
-                    auto const flags = static_cast<PageFlags>(pt_entry & ~ADDRESS_MASK);
                     if (auto mapped = copy->map(virt(address), frame.value(), flags);
                         mapped.is_error()) {
                         free_page(frame.value());

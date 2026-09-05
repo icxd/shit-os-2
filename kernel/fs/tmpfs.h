@@ -3,13 +3,21 @@
 // shit os 2 -- a writable filesystem that lives in the heap.
 //
 // Mounted on /tmp, and the only place anything can be written until a disk
-// driver exists. File contents grow geometrically in the kernel heap, so a
-// tmpfs file costs roughly what it holds.
+// driver exists.
+//
+// File contents are a list of whole physical pages rather than one growing
+// heap buffer. That costs a little padding on small files and buys two things:
+// a file is no longer limited by the largest contiguous allocation the heap
+// can find, and -- the reason it changed -- a page never moves once it has
+// been handed out, so a process can map one and keep it. MAP_SHARED over a
+// file here is what POSIX shared memory actually is, and it is how the window
+// server passes pixels to its clients.
 
 #pragma once
 
 #include <kernel/fs/vfs.h>
 #include <kernel/lib/vector.h>
+#include <kernel/mm/physical.h>
 
 namespace kernel::fs {
 
@@ -25,6 +33,7 @@ public:
     ErrorOr<usize> read(u64 offset, void* buffer, usize length) override;
     ErrorOr<usize> write(u64 offset, void const* buffer, usize length) override;
     ErrorOr<void> truncate(u64 size) override;
+    ErrorOr<PhysAddr> physical_page(u64 offset, bool for_write) override;
 
     ErrorOr<Inode*> lookup(char const* name) override;
     ErrorOr<bool> read_directory(usize index, DirectoryEntry& out) override;
@@ -35,7 +44,9 @@ public:
 private:
     friend class TmpfsFileSystem;
 
-    ErrorOr<void> ensure_capacity(usize wanted);
+    // Both round to whole pages: a file holding one byte owns one page.
+    ErrorOr<void> ensure_pages(u64 wanted_bytes);
+    void release_pages_from(usize first_index);
 
     // Renaming inside one directory mutates the child vector twice, and an
     // index found before the first mutation does not survive it -- so both of
@@ -44,8 +55,7 @@ private:
     static TmpfsInode* find_child(Vector<TmpfsInode*>& children, char const* name);
 
     char m_name[FILENAME_MAX_LENGTH] {};
-    u8* m_data { nullptr };
-    usize m_capacity { 0 };
+    Vector<PhysAddr> m_pages;
     Vector<TmpfsInode*> m_children;
 };
 

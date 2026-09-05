@@ -487,14 +487,15 @@ ErrorOr<u64> sys_brk(InterruptFrame&, u64 address, u64, u64, u64, u64, u64)
 }
 
 ErrorOr<u64> sys_mmap(
-    InterruptFrame&, u64 address, u64 length, u64 protection, u64 flags, u64 fd, u64)
+    InterruptFrame&, u64 address, u64 length, u64 protection, u64 flags, u64 fd, u64 offset)
 {
     if (length == 0)
         return Error::from_errno(EINVAL);
-    if ((flags & MAP_ANONYMOUS) == 0)
-        return Error::from_errno(ENOTSUP); // file-backed mappings need a page cache
-    if (static_cast<int>(fd) != -1 && (flags & MAP_ANONYMOUS) == 0)
-        return Error::from_errno(EINVAL);
+
+    bool const anonymous = (flags & MAP_ANONYMOUS) != 0;
+    bool const shared = (flags & MAP_SHARED) != 0;
+    if (shared == ((flags & MAP_PRIVATE) != 0))
+        return Error::from_errno(EINVAL); // exactly one of the two, says POSIX
 
     auto* process = Process::current();
     usize const rounded = align_up<usize>(length, PAGE_SIZE);
@@ -515,7 +516,71 @@ ErrorOr<u64> sys_mmap(
     if ((protection & PROT_EXEC) == 0)
         page_flags = page_flags | mm::PageFlags::NoExecute;
 
-    TRY(process->address_space()->map_anonymous(virt(target), rounded, page_flags));
+    if (anonymous) {
+        TRY(process->address_space()->map_anonymous(virt(target), rounded, page_flags));
+        return target;
+    }
+
+    // --- file-backed ------------------------------------------------------
+
+    auto* description = TRY(description_for(static_cast<int>(fd)));
+    if (!description->is_readable())
+        return Error::from_errno(EACCES);
+    if (shared && (protection & PROT_WRITE) != 0 && !description->is_writable())
+        return Error::from_errno(EACCES);
+
+    if ((offset & (PAGE_SIZE - 1)) != 0)
+        return Error::from_errno(EINVAL);
+
+    auto& inode = description->inode();
+
+    /*
+     * A private file mapping is a copy that happens to start out looking like
+     * the file, so it is anonymous memory filled in by reading. Eager, like
+     * fork is -- the fault handler has nowhere to record what a lazy page
+     * would need to fetch.
+     */
+    if (!shared) {
+        TRY(process->address_space()->map_anonymous(virt(target), rounded, page_flags));
+        for (usize done = 0; done < rounded; done += PAGE_SIZE) {
+            u8 page[PAGE_SIZE];
+            auto read = inode.read(offset + done, page, PAGE_SIZE);
+            usize const got = read.is_error() ? 0 : read.value();
+            if (got < PAGE_SIZE)
+                memset(page + got, 0, PAGE_SIZE - got);
+            if (auto copied = copy_to_user(target + done, page, PAGE_SIZE); copied.is_error()) {
+                process->address_space()->unmap_range(virt(target), rounded);
+                return copied.error();
+            }
+        }
+        return target;
+    }
+
+    /*
+     * A shared mapping points straight at the inode's own pages, so a write
+     * through it is a write to the file and every other mapper sees it. Only
+     * an inode that owns whole pages can answer -- tmpfs and the framebuffer
+     * do, and everything else reports ENODEV.
+     *
+     * Foreign marks each entry so that neither process teardown nor fork
+     * treats these frames as the process's own to free or to copy.
+     */
+    page_flags = page_flags | mm::PageFlags::Foreign;
+
+    for (usize done = 0; done < rounded; done += PAGE_SIZE) {
+        auto page = inode.physical_page(offset + done, (protection & PROT_WRITE) != 0);
+        if (page.is_error()) {
+            process->address_space()->unmap_range(virt(target), done);
+            return page.error();
+        }
+        if (auto mapped
+            = process->address_space()->map(virt(target + done), page.value(), page_flags);
+            mapped.is_error()) {
+            process->address_space()->unmap_range(virt(target), done);
+            return mapped.error();
+        }
+    }
+
     return target;
 }
 

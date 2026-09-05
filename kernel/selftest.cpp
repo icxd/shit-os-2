@@ -605,6 +605,101 @@ void test_tmpfs()
     }
 }
 
+/*
+ * tmpfs holds file contents as a list of whole pages, so every offset
+ * arithmetic bug lives at a page boundary and nowhere else. A file that fits
+ * in one page -- which is every file the tests above make -- would never
+ * notice.
+ */
+void test_tmpfs_pages()
+{
+    auto created = fs::open("/tmp/pages.bin", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(!created.is_error(), "creating a multi-page file");
+    if (created.is_error())
+        return;
+    auto* file = created.value();
+
+    // A pattern that is different in every byte of a 3-page span, so a copy
+    // that lands one page out cannot pass by accident.
+    constexpr usize SPAN = 3 * PAGE_SIZE;
+    auto* pattern = static_cast<u8*>(kmalloc(SPAN));
+    check(pattern != nullptr, "allocating the pattern");
+    if (pattern == nullptr)
+        return;
+    for (usize i = 0; i < SPAN; ++i)
+        pattern[i] = static_cast<u8>((i * 31 + (i >> 8)) & 0xff);
+
+    auto written = file->write(pattern, SPAN);
+    check(!written.is_error() && written.value() == SPAN, "writing three pages at once");
+
+    // Read it back in an awkward size, so no read starts or ends on a page.
+    auto* readback = static_cast<u8*>(kzalloc(SPAN));
+    check(readback != nullptr, "allocating the readback buffer");
+    if (readback == nullptr) {
+        kfree(pattern);
+        return;
+    }
+
+    check(!file->seek(0, SEEK_SET).is_error(), "seeking back for the readback");
+    usize total = 0;
+    while (total < SPAN) {
+        auto read = file->read(readback + total, min<usize>(1000, SPAN - total));
+        if (read.is_error() || read.value() == 0)
+            break;
+        total += read.value();
+    }
+    check(total == SPAN, "reading three pages back in 1000-byte bites");
+    check(memcmp(pattern, readback, SPAN) == 0, "the bytes survive the page boundaries");
+
+    // A write that starts inside one page and ends inside the next.
+    u8 straddle[64];
+    for (usize i = 0; i < sizeof(straddle); ++i)
+        straddle[i] = 0xA5;
+    check(!file->seek(PAGE_SIZE - 32, SEEK_SET).is_error(), "seeking to a page boundary");
+    check(!file->write(straddle, sizeof(straddle)).is_error(), "writing across a boundary");
+
+    memset(readback, 0, 64);
+    check(!file->seek(PAGE_SIZE - 32, SEEK_SET).is_error(), "seeking back to the boundary");
+    check(!file->read(readback, sizeof(straddle)).is_error(), "reading across a boundary");
+    check(memcmp(readback, straddle, sizeof(straddle)) == 0, "a straddling write reads back");
+
+    // Shrinking must not leave the old bytes recoverable by growing again.
+    auto* inode = &file->inode();
+    check(!inode->truncate(PAGE_SIZE + 16).is_error(), "truncating down");
+    check(inode->size() == PAGE_SIZE + 16, "the size follows the truncate");
+    check(!inode->truncate(SPAN).is_error(), "growing back");
+
+    memset(readback, 0xff, SPAN);
+    check(!file->seek(PAGE_SIZE + 16, SEEK_SET).is_error(), "seeking into the regrown tail");
+    auto tail = file->read(readback, 256);
+    check(!tail.is_error() && tail.value() == 256, "reading the regrown tail");
+    bool all_zero = true;
+    for (usize i = 0; i < 256; ++i) {
+        if (readback[i] != 0)
+            all_zero = false;
+    }
+    check(all_zero, "shrinking and regrowing does not bring the old bytes back");
+
+    // physical_page is what mmap will call. Two offsets in the same page must
+    // give the same frame, and different pages must not.
+    auto first = inode->physical_page(0, false);
+    auto same = inode->physical_page(PAGE_SIZE - 1, false);
+    auto second = inode->physical_page(PAGE_SIZE, false);
+    check(!first.is_error() && !same.is_error() && !second.is_error(),
+        "physical_page answers for a sized file");
+    if (!first.is_error() && !same.is_error() && !second.is_error()) {
+        check(first.value() == same.value(), "one page answers for all its offsets");
+        check(first.value() != second.value(), "different pages are different frames");
+    }
+    check(inode->physical_page(SPAN + PAGE_SIZE, false).is_error(),
+        "physical_page refuses an offset past the end");
+
+    kfree(pattern);
+    kfree(readback);
+    if (auto tmp = fs::resolve("/tmp"); !tmp.is_error())
+        (void)tmp.value()->unlink("pages.bin");
+}
+
 void test_inode_lifetime()
 {
     // The regression this whole change exists for: a file removed while it is
@@ -949,6 +1044,7 @@ void run_filesystem_selftests()
 
     test_vfs();
     test_tmpfs();
+    test_tmpfs_pages();
     test_inode_lifetime();
     test_rename();
     test_clock();

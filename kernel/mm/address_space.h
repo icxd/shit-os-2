@@ -33,6 +33,20 @@ enum class PageFlags : u64 {
     Dirty = 1ULL << 6,
     Huge = 1ULL << 7,
     Global = 1ULL << 8,
+
+    /*
+     * Bits 9..11 are ignored by the hardware and left to the OS. This one says
+     * the frame behind this entry belongs to somebody else -- device memory, or
+     * a page owned by an inode that other processes may also have mapped -- so
+     * tearing the address space down must drop the mapping without freeing the
+     * frame.
+     *
+     * Without it, the first process to mmap /dev/fb0 would hand the
+     * framebuffer's MMIO pages to the physical allocator on exit, and a shared
+     * tmpfs page would be freed out from under every other mapper.
+     */
+    Foreign = 1ULL << 9,
+
     NoExecute = 1ULL << 63,
 };
 

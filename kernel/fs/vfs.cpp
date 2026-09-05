@@ -143,6 +143,13 @@ ErrorOr<int> Inode::ioctl(u32, void*)
     return Error::from_errno(ENOTTY);
 }
 
+ErrorOr<PhysAddr> Inode::physical_page(u64, bool)
+{
+    // ENODEV is what mmap reports for a file whose filesystem cannot back a
+    // mapping, which is every one of them that does not override this.
+    return Error::from_errno(ENODEV);
+}
+
 void Inode::destroy()
 {
     // The destructor is virtual, so this dispatches to the most derived one

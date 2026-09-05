@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -737,6 +738,98 @@ static void test_select(void)
     close(fds[1]);
 }
 
+/*
+ * Shared memory, which here is just a tmpfs file mapped MAP_SHARED -- which is
+ * what POSIX shared memory has always actually been. The window server passes
+ * every window's pixels this way, so all of it matters:
+ *
+ *   - two mappings of one file are the same memory, not two copies;
+ *   - a write through the mapping is a write to the file;
+ *   - the mapping survives fork as shared memory, so parent and child see each
+ *     other's stores;
+ *   - and unmapping, or exiting, does not corrupt anything -- if the frames
+ *     were wrongly freed back to the allocator this test would pass and the
+ *     ones after it would fail strangely, which is why it runs before them.
+ */
+static void test_shared_memory(void)
+{
+    const char* path = "/tmp/shm.bin";
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    check(fd >= 0, "creating a file to share");
+    if (fd < 0)
+        return;
+
+    size_t const size = 8192; /* two pages, so boundaries are exercised */
+    check(ftruncate(fd, size) == 0, "sizing it before mapping");
+
+    volatile unsigned char* a = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    check(a != MAP_FAILED, "mapping it shared");
+    if (a == MAP_FAILED) {
+        close(fd);
+        return;
+    }
+
+    volatile unsigned char* b = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    check(b != MAP_FAILED, "mapping the same file a second time");
+    check(a != b, "the two mappings are at different addresses");
+
+    if (b != MAP_FAILED) {
+        a[0] = 0x11;
+        a[4095] = 0x22; /* last byte of page one */
+        a[4096] = 0x33; /* first byte of page two */
+        a[8191] = 0x44;
+        check(b[0] == 0x11 && b[4095] == 0x22, "a store is visible through the other mapping");
+        check(b[4096] == 0x33 && b[8191] == 0x44, "and across the page boundary");
+
+        b[100] = 0x55;
+        check(a[100] == 0x55, "and the other way round");
+    }
+
+    /* A write through the mapping is a write to the file. */
+    unsigned char scratch[4] = { 0, 0, 0, 0 };
+    check(lseek(fd, 0, SEEK_SET) == 0, "seeking the shared file");
+    check(read(fd, scratch, 1) == 1, "reading the shared file");
+    check(scratch[0] == 0x11, "the mapping and the file are the same bytes");
+
+    /* And it survives fork as shared memory rather than being copied. */
+    a[200] = 0x66;
+    pid_t child = fork();
+    if (child == 0) {
+        a[201] = 0x77;
+        _exit(a[200] == 0x66 ? 0 : 1);
+    }
+    check(child > 0, "forking with a shared mapping");
+    if (child > 0) {
+        int status = 0;
+        waitpid(child, &status, 0);
+        check(
+            WIFEXITED(status) && WEXITSTATUS(status) == 0, "the child sees what the parent wrote");
+        check(a[201] == 0x77, "and the parent sees what the child wrote");
+    }
+
+    check(munmap((void*)a, size) == 0, "unmapping");
+    if (b != MAP_FAILED)
+        check(munmap((void*)b, size) == 0, "unmapping the second one");
+    close(fd);
+    unlink(path);
+
+    /* A private file mapping is a copy: writing to it must not touch the file. */
+    fd = open("/etc/rc", O_RDONLY);
+    if (fd >= 0) {
+        char* private_map = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+        check(private_map != MAP_FAILED, "mapping a file private");
+        if (private_map != MAP_FAILED) {
+            check(private_map[0] == '#', "a private mapping starts as the file's contents");
+            private_map[0] = 'X';
+            char first = 0;
+            check(read(fd, &first, 1) == 1, "reading the file behind a private mapping");
+            check(first == '#', "writing to a private mapping does not touch the file");
+            munmap(private_map, 4096);
+        }
+        close(fd);
+    }
+}
+
 int main(int argc, char** argv, char** envp)
 {
     (void)envp;
@@ -745,6 +838,7 @@ int main(int argc, char** argv, char** envp)
     if (argc == 4 && strcmp(argv[1], "--report-descriptors") == 0)
         return report_descriptors(atoi(argv[2]), atoi(argv[3]));
 
+    test_shared_memory();
     test_fcntl();
     test_close_on_exec();
     test_rename();
