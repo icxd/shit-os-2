@@ -51,6 +51,21 @@ check "the buffer goes when the client does" \
 # ignores SIGPIPE.
 check "the server outlives its client" "$(kill -0 $server 2>/dev/null && echo yes || echo no)" "yes"
 
+# The terminal, which is the whole point of the desktop: a pty, a shell on the
+# far end of it, and a widget in between.
+terminal &
+term=$!
+sleep 3
+
+check "the terminal is running" "$(kill -0 $term 2>/dev/null && echo yes || echo no)" "yes"
+check "and it has a window" \
+    "$(test -f /tmp/wsys/win2.px && echo yes || echo no)" "yes"
+
+kill $term 2>/dev/null
+sleep 2
+check "closing the terminal takes its window" \
+    "$(test -f /tmp/wsys/win2.px && echo present || echo gone)" "gone"
+
 kill $server 2>/dev/null
 sleep 1
 

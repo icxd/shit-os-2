@@ -15,6 +15,8 @@ set(KERNEL_SOURCES
     boot/boot_info.cpp
     dev/console.cpp
     dev/fbdev.cpp
+    dev/line_discipline.cpp
+    dev/pty.cpp
     dev/framebuffer.cpp
     dev/tty.cpp
     fs/boot_mounts.cpp

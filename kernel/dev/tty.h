@@ -1,26 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// shit os 2 -- the terminal.
+// shit os 2 -- the console as a terminal.
 //
-// Sits between the keyboard driver and the console and does the thing that
-// makes a shell feel like a shell: canonical mode. Input is buffered a line at
-// a time, backspace erases, ^C raises SIGINT and ^D ends the line early.
+// What is left here after the line discipline moved out: the keyboard on one
+// side, the screen on the other, and the window size, which is the one thing
+// the console knows and a pseudo-terminal does not -- it is however many
+// characters actually fit on the framebuffer.
 //
 // The TTY reads through /dev/kbd0 rather than talking to the keyboard driver,
 // so replacing the PS/2 module with a USB one changes nothing here.
 
 #pragma once
 
+#include <kernel/dev/line_discipline.h>
 #include <kernel/fs/vfs.h>
 #include <kernel/lib/error.h>
-#include <kernel/sched/waitqueue.h>
 
 #include <shitos/abi/termios.h>
 #include <shitos/module/api.h>
 
 namespace kernel::dev {
-
-inline constexpr usize TTY_LINE_BUFFER_SIZE = 1024;
 
 class Tty {
 public:
@@ -30,41 +29,28 @@ public:
     isize read(void* buffer, usize length);
     isize write(void const* buffer, usize length);
     int ioctl(u32 request, void* argument);
-    bool has_line_ready() const;
+    bool has_line_ready() const { return m_discipline.has_input(); }
 
-    // Which process *group* owns the terminal. A shell sets it with TIOCSPGRP
-    // as it starts and stops jobs; everything else about job control follows
-    // from it. ^C goes to this group, and a read from any other group stops
-    // the reader with SIGTTIN rather than stealing input from the foreground.
-    void set_foreground_group(i32 pgid) { m_foreground_group = pgid; }
-    i32 foreground_group() const { return m_foreground_group; }
+    LineDiscipline& discipline() { return m_discipline; }
+
+    void set_foreground_group(i32 pgid) { m_discipline.set_foreground_group(pgid); }
+    i32 foreground_group() const { return m_discipline.foreground_group(); }
 
 private:
     friend void tty_input_thread(void*);
     friend void tty_serial_input_thread(void*);
 
-    void process_input_character(char c);
-    void echo(char c);
+    // Where the discipline's echo goes: the screen and the serial port, which
+    // is what kputchar already means.
+    static void echo_to_console(void* owner, char c);
 
-    struct termios m_termios { };
-
-    char m_line[TTY_LINE_BUFFER_SIZE] {};
-    usize m_line_length { 0 };
-
-    // Completed lines waiting to be read, as a flat byte queue: a reader takes
-    // bytes, not lines, and may ask for fewer than a whole line at a time.
-    char m_ready[TTY_LINE_BUFFER_SIZE * 4] {};
-    usize m_ready_head { 0 };
-    usize m_ready_tail { 0 };
-
-    // Sends `signal` to every process in the foreground group, which is what
-    // makes ^C reach a whole pipeline rather than one member of it.
-    void signal_foreground_group(int signal);
-
+    LineDiscipline m_discipline;
     fs::Inode* m_keyboard { nullptr };
-    WaitQueue m_readers;
-    i32 m_foreground_group { 0 };
-    bool m_saw_eof { false };
+
+    // The console's own /dev/tty0 node. Held so that TIOCSCTTY has something
+    // to hand the process as its controlling terminal -- a Tty is not an
+    // Inode, and a session has to point at something /dev/tty can forward to.
+    fs::Inode* m_node { nullptr };
 };
 
 // Pumps the keyboard into the line discipline. Runs as its own kernel thread

@@ -68,10 +68,19 @@ static int connect_to_server(UiWindow* window)
     if (mkfifo(to_server, 0666) < 0 || mkfifo(to_client, 0666) < 0)
         return -1;
 
-    /* Both O_RDWR and both before announcing, so no open can block and no
-     * ordering between client and server can deadlock. */
-    window->to_server = open(to_server, O_RDWR);
-    window->to_client = open(to_client, O_RDWR);
+    /*
+     * Both O_RDWR and both before announcing, so no open can block and no
+     * ordering between client and server can deadlock.
+     *
+     * Close-on-exec, and it is not a tidiness measure. The server learns that
+     * a client is gone by reading end of file on this channel, and end of file
+     * only arrives when the *last* writer closes. A client that forks and
+     * execs -- which the terminal does, that being its entire job -- would
+     * otherwise hand a copy of the write end to the child, and the window
+     * would outlive the process that owned it for as long as the child lived.
+     */
+    window->to_server = open(to_server, O_RDWR | O_CLOEXEC);
+    window->to_client = open(to_client, O_RDWR | O_CLOEXEC);
     if (window->to_server < 0 || window->to_client < 0)
         return -1;
 
@@ -395,7 +404,7 @@ void ui_window_close(UiWindow* window)
         window->running = 0;
 }
 
-int ui_window_run(UiWindow* window)
+int ui_window_pump(UiWindow* window, int extra, UiWindowReady on_ready, void* user)
 {
     if (window == NULL)
         return 1;
@@ -403,38 +412,57 @@ int ui_window_run(UiWindow* window)
     repaint(window);
 
     while (window->running) {
-        struct pollfd waiting = { .fd = window->to_client, .events = POLLIN, .revents = 0 };
+        struct pollfd waiting[2];
+        int count = 0;
 
-        if (poll(&waiting, 1, -1) < 0) {
+        waiting[count].fd = window->to_client;
+        waiting[count].events = POLLIN;
+        waiting[count++].revents = 0;
+
+        int const extra_slot = extra >= 0 ? count : -1;
+        if (extra >= 0) {
+            waiting[count].fd = extra;
+            waiting[count].events = POLLIN;
+            waiting[count++].revents = 0;
+        }
+
+        if (poll(waiting, (unsigned)count, -1) < 0) {
             if (errno == EINTR)
                 continue;
             break;
         }
 
-        /*
-         * Drain everything that has arrived before painting once. A mouse
-         * dragged quickly delivers a burst of movement, and repainting per
-         * event would spend the whole frame on positions nobody ever saw.
-         */
-        for (;;) {
-            struct WsysMessage message;
-            ssize_t const got = read(window->to_client, &message, sizeof(message));
-            if (got != (ssize_t)sizeof(message))
-                break;
+        if (extra_slot >= 0 && (waiting[extra_slot].revents & (POLLIN | POLLHUP)) != 0) {
+            if (on_ready != NULL && on_ready(extra, user) != 0)
+                window->running = 0;
+        }
 
-            switch (message.type) {
-            case WSYS_MOUSE:
-                deliver_mouse(window, message.mouse.x, message.mouse.y, message.mouse.buttons,
-                    message.mouse.wheel);
-                break;
-            case WSYS_KEY: deliver_key(window, &message); break;
-            case WSYS_CLOSE_REQUEST: window->running = 0; break;
-            default: break;
+        if ((waiting[0].revents & POLLIN) != 0) {
+            /*
+             * Drain everything that has arrived before painting once. A mouse
+             * dragged quickly delivers a burst of movement, and repainting per
+             * event would spend the whole frame on positions nobody ever saw.
+             */
+            for (;;) {
+                struct WsysMessage message;
+                ssize_t const got = read(window->to_client, &message, sizeof(message));
+                if (got != (ssize_t)sizeof(message))
+                    break;
+
+                switch (message.type) {
+                case WSYS_MOUSE:
+                    deliver_mouse(window, message.mouse.x, message.mouse.y, message.mouse.buttons,
+                        message.mouse.wheel);
+                    break;
+                case WSYS_KEY: deliver_key(window, &message); break;
+                case WSYS_CLOSE_REQUEST: window->running = 0; break;
+                default: break;
+                }
+
+                struct pollfd more = { .fd = window->to_client, .events = POLLIN, .revents = 0 };
+                if (poll(&more, 1, 0) <= 0)
+                    break;
             }
-
-            struct pollfd more = { .fd = window->to_client, .events = POLLIN, .revents = 0 };
-            if (poll(&more, 1, 0) <= 0)
-                break;
         }
 
         if (window->needs_paint || window->needs_layout)
@@ -448,4 +476,9 @@ int ui_window_run(UiWindow* window)
     (void)send_message(window, &message);
 
     return 0;
+}
+
+int ui_window_run(UiWindow* window)
+{
+    return ui_window_pump(window, -1, NULL, NULL);
 }

@@ -13,6 +13,7 @@
 #include <kernel/arch/x86_64/io.h>
 #include <kernel/arch/x86_64/percpu.h>
 #include <kernel/dev/console.h>
+#include <kernel/dev/pty.h>
 #include <kernel/dev/tty.h>
 #include <kernel/fs/pipe.h>
 #include <kernel/fs/vfs.h>
@@ -787,8 +788,14 @@ ErrorOr<u64> sys_getcwd(InterruptFrame&, u64 buffer, u64 capacity, u64, u64, u64
     return buffer;
 }
 
-// The three legacy requests whose numbers predate the size encoding. Anything
-// defined with _IOR/_IOW/_IOWR describes itself and needs no entry here.
+// The requests whose numbers predate the size encoding. Anything defined with
+// _IOR/_IOW/_IOWR describes itself and needs no entry here.
+//
+// Missing one is not harmless. Without an entry the request is treated as
+// taking its argument by value, so the raw user pointer is handed to the
+// device and dereferenced in kernel context -- which is what was happening to
+// TIOCGPGRP and TIOCSPGRP, and worked only because nothing had yet passed a
+// bad pointer.
 struct LegacyIoctl {
     u32 request;
     u32 direction;
@@ -799,6 +806,9 @@ constexpr LegacyIoctl LEGACY_IOCTLS[] = {
     { TCGETS, _IOC_READ, sizeof(struct termios) },
     { TCSETS, _IOC_WRITE, sizeof(struct termios) },
     { TIOCGWINSZ, _IOC_READ, sizeof(struct winsize) },
+    { TIOCSWINSZ, _IOC_WRITE, sizeof(struct winsize) },
+    { TIOCGPGRP, _IOC_READ, sizeof(i32) },
+    { TIOCSPGRP, _IOC_WRITE, sizeof(i32) },
 };
 
 bool describe_ioctl(u32 request, u32& direction, usize& size)
@@ -879,7 +889,6 @@ ErrorOr<u64> sys_kill(InterruptFrame&, u64 pid_argument, u64 signal, u64, u64, u
         return Error::from_errno(EINVAL);
 
     auto* caller = Process::current();
-
     // A negative pid addresses a process group, which is what makes ^C reach a
     // pipeline rather than whichever member of it happened to be reading.
     if (pid < -1 || pid == 0) {
@@ -1364,6 +1373,53 @@ ErrorOr<u64> sys_mkfifo(InterruptFrame&, u64 path_pointer, u64 mode, u64, u64, u
     return static_cast<u64>(0);
 }
 
+/*
+ * A pseudo-terminal pair, both descriptors at once.
+ *
+ * Not posix_openpt: that hands back a master and a *name*, and turning a name
+ * back into the slave needs a /dev/pts filesystem whose contents track the
+ * ptys that exist. openpty is what programs actually call -- through libutil,
+ * on every system that has one -- and it needs none of that machinery. When
+ * something is ported that genuinely wants ptsname, the name can be added on
+ * top of this rather than the other way round.
+ */
+ErrorOr<u64> sys_openpty(InterruptFrame&, u64 master_pointer, u64 slave_pointer, u64, u64, u64, u64)
+{
+    fs::FileDescription* master = nullptr;
+    fs::FileDescription* slave = nullptr;
+    TRY(dev::Pty::create(master, slave));
+
+    auto* process = Process::current();
+
+    auto master_fd = process->allocate_descriptor(master);
+    if (master_fd.is_error()) {
+        fs::release_description(master);
+        fs::release_description(slave);
+        return master_fd.error();
+    }
+
+    auto slave_fd = process->allocate_descriptor(slave);
+    if (slave_fd.is_error()) {
+        (void)process->close_descriptor(master_fd.value());
+        fs::release_description(slave);
+        return slave_fd.error();
+    }
+
+    int const numbers[2] = { master_fd.value(), slave_fd.value() };
+    if (auto copied = copy_to_user(master_pointer, &numbers[0], sizeof(int)); copied.is_error()) {
+        (void)process->close_descriptor(master_fd.value());
+        (void)process->close_descriptor(slave_fd.value());
+        return copied.error();
+    }
+    if (auto copied = copy_to_user(slave_pointer, &numbers[1], sizeof(int)); copied.is_error()) {
+        (void)process->close_descriptor(master_fd.value());
+        (void)process->close_descriptor(slave_fd.value());
+        return copied.error();
+    }
+
+    return static_cast<u64>(0);
+}
+
 ErrorOr<u64> sys_ftruncate(InterruptFrame&, u64 fd, u64 length, u64, u64, u64, u64)
 {
     auto* description = TRY(description_for(static_cast<int>(fd)));
@@ -1598,6 +1654,7 @@ SyscallHandler const POSIX_SYSCALLS[SYS_MAX_POSIX] = {
     [SYS_mkdirat] = sys_mkdirat,
     [SYS_fchmodat] = sys_fchmodat,
     [SYS_mkfifo] = sys_mkfifo,
+    [SYS_openpty] = sys_openpty,
 };
 
 #pragma clang diagnostic pop

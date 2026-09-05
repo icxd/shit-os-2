@@ -54,15 +54,37 @@ set -- \
 
 [ "$DEBUG" = 1 ] && set -- "$@" -s -S
 
+# The shell's own banner is the marker, because reaching it proves the whole
+# chain: kernel, init, fork, execve, the TTY and stdout.
+MARKER='type .help. for what actually works'
+
 if [ "$EXPECT_OK" = 1 ]; then
     LOG="$(mktemp)"
-    trap 'rm -f "$LOG"' EXIT
-    timeout "$TIMEOUT" qemu-system-x86_64 "$@" -display none -serial "file:$LOG" >/dev/null 2>&1 || true
+    QEMU_PID=""
+    trap 'rm -f "$LOG"; [ -n "$QEMU_PID" ] && kill "$QEMU_PID" 2>/dev/null; true' EXIT
+
+    qemu-system-x86_64 "$@" -display none -serial "file:$LOG" >/dev/null 2>&1 &
+    QEMU_PID=$!
+
+    # Poll for the marker instead of waiting the timeout out. The boot reaches
+    # it in about fifteen seconds and the timeout has to be generous enough for
+    # a loaded CI runner, so sitting through the difference on every run was
+    # most of what a verification cost.
+    elapsed=0
+    while [ "$elapsed" -lt "$TIMEOUT" ]; do
+        grep -q "$MARKER" "$LOG" 2>/dev/null && break
+        kill -0 "$QEMU_PID" 2>/dev/null || break
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    kill "$QEMU_PID" 2>/dev/null || true
+    wait "$QEMU_PID" 2>/dev/null || true
+    QEMU_PID=""
+
     cat "$LOG"
-    # The shell's own banner is the marker, because reaching it proves the
-    # whole chain: kernel, init, fork, execve, the TTY and stdout.
-    if grep -q 'type .help. for what actually works' "$LOG"; then
-        echo "run-qemu: reached a userland shell prompt" >&2
+    if grep -q "$MARKER" "$LOG"; then
+        echo "run-qemu: reached a userland shell prompt in ${elapsed}s" >&2
         exit 0
     fi
     echo "run-qemu: never reached a shell prompt within ${TIMEOUT}s" >&2

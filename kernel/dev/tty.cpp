@@ -48,6 +48,77 @@ constexpr DeviceOps TTY_OPS {
     tty_device_poll,
 };
 
+/* --- /dev/tty ------------------------------------------------------------
+ *
+ * Not a device of its own: it is whichever terminal the calling process's
+ * session is attached to, resolved on every call. That indirection is the
+ * whole point. A program whose output is in a pipe still has a terminal, and
+ * `/dev/tty` is the only way to reach it -- which is why every shell opens it
+ * before deciding whether it can do job control, and why dash sat silently
+ * waiting for a terminal that was somebody else's until this existed.
+ */
+
+fs::Inode* controlling_terminal()
+{
+    auto* process = Process::current();
+    return process != nullptr ? process->controlling_terminal() : nullptr;
+}
+
+isize controlling_read(void*, void* buffer, usize length, u64 offset)
+{
+    auto* terminal = controlling_terminal();
+    if (terminal == nullptr)
+        return -ENXIO;
+
+    auto result = terminal->read(offset, buffer, length);
+    if (result.is_error())
+        return -result.error().code();
+    return static_cast<isize>(result.value());
+}
+
+isize controlling_write(void*, void const* buffer, usize length, u64 offset)
+{
+    auto* terminal = controlling_terminal();
+    if (terminal == nullptr)
+        return -ENXIO;
+
+    auto result = terminal->write(offset, buffer, length);
+    if (result.is_error())
+        return -result.error().code();
+    return static_cast<isize>(result.value());
+}
+
+int controlling_ioctl(void*, u32 request, void* argument)
+{
+    auto* terminal = controlling_terminal();
+    if (terminal == nullptr)
+        return -ENXIO;
+
+    // Claiming through /dev/tty would make a session's terminal point at
+    // itself, and every read after that would recurse until the stack ran
+    // out. TIOCSCTTY belongs to the real device.
+    if (request == TIOCSCTTY)
+        return -ENOTTY;
+
+    auto result = terminal->ioctl(request, argument);
+    if (result.is_error())
+        return -result.error().code();
+    return result.value();
+}
+
+bool controlling_poll(void*)
+{
+    auto* terminal = controlling_terminal();
+    return terminal != nullptr ? terminal->can_read_without_blocking() : true;
+}
+
+constexpr DeviceOps CONTROLLING_TTY_OPS {
+    controlling_read,
+    controlling_write,
+    controlling_ioctl,
+    controlling_poll,
+};
+
 } // namespace
 
 Tty& Tty::the()
@@ -59,15 +130,12 @@ ErrorOr<void> Tty::initialize()
 {
     auto& tty = s_tty;
 
-    tty.m_termios.c_iflag = ICRNL;
-    tty.m_termios.c_oflag = OPOST | ONLCR;
-    tty.m_termios.c_lflag = ISIG | ICANON | ECHO;
-    tty.m_termios.c_cc[VINTR] = 3; // ^C
-    tty.m_termios.c_cc[VQUIT] = 28; // ctrl-backslash
-    tty.m_termios.c_cc[VERASE] = 8; // backspace
-    tty.m_termios.c_cc[VKILL] = 21; // ^U
-    tty.m_termios.c_cc[VEOF] = 4; // ^D
-    tty.m_termios.c_cc[VSUSP] = 26; // ^Z
+    tty.m_discipline.configure(&tty, &Tty::echo_to_console);
+
+    // The console, unlike a pty, is claimed by whoever reads it first. Nothing
+    // calls TIOCSPGRP before the first shell exists, and without this every
+    // early reader would be a background job of a terminal nobody owns.
+    tty.m_discipline.set_adopts_readers(true);
 
     // The keyboard is whatever registered /dev/kbd0. If no keyboard module
     // loaded, the terminal is output-only rather than broken.
@@ -87,189 +155,32 @@ ErrorOr<void> Tty::initialize()
 
     TRY(devfs->register_device({ "tty0", DEVICE_TYPE_CHAR, &tty, &TTY_OPS }));
     TRY(devfs->register_device({ "console", DEVICE_TYPE_CHAR, &tty, &TTY_OPS }));
+    TRY(devfs->register_device({ "tty", DEVICE_TYPE_CHAR, nullptr, &CONTROLLING_TTY_OPS }));
+
+    // The console needs to be findable as an inode, not just as a device with
+    // a name: that is what a process attaches to when it claims the console
+    // with TIOCSCTTY, and what /dev/tty then forwards to.
+    if (auto node = fs::resolve("/dev/tty0"); !node.is_error()) {
+        tty.m_node = node.value();
+        tty.m_node->ref();
+    }
 
     klog(LOG_INFO, "tty", "/dev/tty0 ready (canonical mode, echo on)");
     return {};
 }
 
-void Tty::signal_foreground_group(int signal)
+void Tty::echo_to_console(void*, char c)
 {
-    if (m_foreground_group == 0)
-        return;
-    Process::for_each_in_group(
-        m_foreground_group,
-        [](Process& process, void* context) { process.raise_signal(*static_cast<int*>(context)); },
-        &signal);
-}
-
-void Tty::echo(char c)
-{
-    if ((m_termios.c_lflag & ECHO) == 0)
-        return;
-
-    if (c == '\n') {
-        kputchar('\n');
-    } else if (c == '\b') {
-        // Erase visually as well as logically: back up, overwrite, back up.
-        kputchar('\b');
-        kputchar(' ');
-        kputchar('\b');
-    } else if (c >= 32 && c < 127) {
-        kputchar(c);
-    } else if (c < 32) {
-        // Control characters echo as ^X, the way every terminal does.
-        kputchar('^');
-        kputchar(static_cast<char>(c + '@'));
-    }
-}
-
-void Tty::process_input_character(char c)
-{
-    if ((m_termios.c_iflag & ICRNL) != 0 && c == '\r')
-        c = '\n';
-
-    if ((m_termios.c_lflag & ISIG) != 0) {
-        int generated = 0;
-        if (c == static_cast<char>(m_termios.c_cc[VINTR]))
-            generated = SIGINT;
-        else if (c == static_cast<char>(m_termios.c_cc[VQUIT]))
-            generated = SIGQUIT;
-        else if (c == static_cast<char>(m_termios.c_cc[VSUSP]))
-            generated = SIGTSTP;
-
-        if (generated != 0) {
-            echo(c);
-            kputchar('\n');
-            // Whatever was half typed is discarded: the line the user was
-            // building is not what they meant to send any more.
-            m_line_length = 0;
-            signal_foreground_group(generated);
-            m_readers.wake_all();
-            return;
-        }
-    }
-
-    if ((m_termios.c_lflag & ICANON) == 0) {
-        // Raw mode: every byte is available immediately.
-        usize const next = (m_ready_head + 1) % sizeof(m_ready);
-        if (next != m_ready_tail) {
-            m_ready[m_ready_head] = c;
-            m_ready_head = next;
-        }
-        echo(c);
-        m_readers.wake_all();
-        return;
-    }
-
-    if (c == static_cast<char>(m_termios.c_cc[VERASE]) || c == 127) {
-        if (m_line_length > 0) {
-            --m_line_length;
-            echo('\b');
-        }
-        return;
-    }
-
-    if (c == static_cast<char>(m_termios.c_cc[VKILL])) {
-        while (m_line_length > 0) {
-            --m_line_length;
-            echo('\b');
-        }
-        return;
-    }
-
-    if (c == static_cast<char>(m_termios.c_cc[VEOF])) {
-        // ^D ends the line early. On an empty line that is end of input.
-        if (m_line_length == 0)
-            m_saw_eof = true;
-        for (usize i = 0; i < m_line_length; ++i) {
-            usize const next = (m_ready_head + 1) % sizeof(m_ready);
-            if (next == m_ready_tail)
-                break;
-            m_ready[m_ready_head] = m_line[i];
-            m_ready_head = next;
-        }
-        m_line_length = 0;
-        m_readers.wake_all();
-        return;
-    }
-
-    if (c == '\n') {
-        echo('\n');
-        if (m_line_length < TTY_LINE_BUFFER_SIZE)
-            m_line[m_line_length++] = '\n';
-        for (usize i = 0; i < m_line_length; ++i) {
-            usize const next = (m_ready_head + 1) % sizeof(m_ready);
-            if (next == m_ready_tail)
-                break;
-            m_ready[m_ready_head] = m_line[i];
-            m_ready_head = next;
-        }
-        m_line_length = 0;
-        m_readers.wake_all();
-        return;
-    }
-
-    if (m_line_length + 1 < TTY_LINE_BUFFER_SIZE) {
-        m_line[m_line_length++] = c;
-        echo(c);
-    }
-}
-
-bool Tty::has_line_ready() const
-{
-    return m_ready_head != m_ready_tail || m_saw_eof;
+    kputchar(c);
 }
 
 isize Tty::read(void* buffer, usize length)
 {
-    auto* out = static_cast<char*>(buffer);
-    if (length == 0)
+    // No keyboard means nothing will ever arrive, so a read is end of file
+    // rather than a wait nobody can end.
+    if (m_keyboard == nullptr)
         return 0;
-
-    auto* reader = Process::current();
-
-    // A terminal whose owning group has gone belongs to nobody, and leaving it
-    // that way would stop every later reader with SIGTTIN -- a wedged console
-    // with no way back. The next reader takes it instead.
-    if (m_foreground_group != 0 && !Process::group_exists(m_foreground_group))
-        m_foreground_group = 0;
-
-    // Same rule before anyone has claimed it with TIOCSPGRP. Without it, the
-    // shell init spawns would be in the background of a terminal nobody owns
-    // and could never read at all.
-    if (m_foreground_group == 0 && reader != nullptr)
-        m_foreground_group = reader->pgid();
-
-    // A background job reading the terminal is stopped rather than allowed to
-    // steal input the foreground job is waiting for. SIGTTIN is the mechanism
-    // and `fg` is the cure.
-    if (reader != nullptr && m_foreground_group != 0 && reader->pgid() != m_foreground_group) {
-        reader->raise_signal(SIGTTIN);
-        return -EINTR;
-    }
-
-    while (m_ready_head == m_ready_tail) {
-        if (m_saw_eof) {
-            m_saw_eof = false;
-            return 0;
-        }
-        if (m_keyboard == nullptr)
-            return 0;
-        m_readers.wait();
-
-        // A signal arriving while blocked has to break the read, or ^C could
-        // never interrupt a program sitting at a prompt.
-        if (auto* process = Process::current();
-            process != nullptr && process->has_pending_signals())
-            return -EINTR;
-    }
-
-    usize written = 0;
-    while (written < length && m_ready_head != m_ready_tail) {
-        out[written++] = m_ready[m_ready_tail];
-        m_ready_tail = (m_ready_tail + 1) % sizeof(m_ready);
-    }
-    return static_cast<isize>(written);
+    return m_discipline.read(buffer, length);
 }
 
 isize Tty::write(void const* buffer, usize length)
@@ -287,24 +198,24 @@ isize Tty::write(void const* buffer, usize length)
 int Tty::ioctl(u32 request, void* argument)
 {
     switch (request) {
-    case TCGETS: {
+    case TCGETS:
         if (argument == nullptr)
             return -EINVAL;
-        memcpy(argument, &m_termios, sizeof(m_termios));
+        memcpy(argument, &m_discipline.termios(), sizeof(struct termios));
         return 0;
-    }
-    case TCSETS: {
+
+    case TCSETS:
         if (argument == nullptr)
             return -EINVAL;
-        memcpy(&m_termios, argument, sizeof(m_termios));
+        memcpy(&m_discipline.termios(), argument, sizeof(struct termios));
         return 0;
-    }
-    case TIOCGPGRP: {
+
+    case TIOCGPGRP:
         if (argument == nullptr)
             return -EINVAL;
-        *static_cast<i32*>(argument) = m_foreground_group;
+        *static_cast<i32*>(argument) = m_discipline.foreground_group();
         return 0;
-    }
+
     case TIOCSPGRP: {
         if (argument == nullptr)
             return -EINVAL;
@@ -315,10 +226,27 @@ int Tty::ioctl(u32 request, void* argument)
         // nothing, and every subsequent read would stop its caller.
         if (!Process::group_exists(wanted))
             return -EPERM;
-        m_foreground_group = wanted;
+        m_discipline.set_foreground_group(wanted);
         return 0;
     }
+
+    case TIOCSCTTY: {
+        if (m_node == nullptr)
+            return -ENXIO;
+        auto* process = Process::current();
+        if (process == nullptr)
+            return -ENXIO;
+        // Only a session leader, because the terminal belongs to the session
+        // rather than to the process that happened to ask.
+        if (process->pid() != process->sid())
+            return -EPERM;
+        process->set_controlling_terminal(m_node);
+        return 0;
+    }
+
     case TIOCGWINSZ: {
+        // The one thing the console knows that a pty does not: its size is
+        // however many characters fit on the screen, and is not settable.
         if (argument == nullptr)
             return -EINVAL;
         auto* size = static_cast<struct winsize*>(argument);
@@ -329,6 +257,7 @@ int Tty::ioctl(u32 request, void* argument)
         size->ws_ypixel = 0;
         return 0;
     }
+
     default: return -ENOTTY;
     }
 }
@@ -349,7 +278,7 @@ void tty_input_thread(void*)
             continue;
         }
         for (usize i = 0; i < read.value(); ++i)
-            tty.process_input_character(scratch[i]);
+            tty.m_discipline.feed(scratch[i]);
     }
 }
 
@@ -365,7 +294,7 @@ void tty_serial_input_thread(void*)
             // Terminals send CR for the return key; the line discipline wants
             // NL, and ICRNL already handles that. DEL is what most terminals
             // send for backspace.
-            tty.process_input_character(c);
+            tty.m_discipline.feed(c);
             saw_input = true;
         }
 

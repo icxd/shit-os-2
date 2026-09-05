@@ -78,6 +78,20 @@ public:
     static ErrorOr<void> set_process_group(pid_t pid, pid_t pgid);
     ErrorOr<pid_t> start_session();
 
+    // --- the controlling terminal ---
+    //
+    // The terminal a session is attached to, and what `/dev/tty` resolves to.
+    // It is not the same thing as "whatever is on standard input": a program
+    // with its output in a pipe still has one, and that is exactly when the
+    // difference matters -- a shell asks its *terminal* who owns the
+    // foreground, not its stdin.
+    //
+    // Acquired with TIOCSCTTY by a session leader, inherited across fork and
+    // exec, and dropped by setsid. Held by reference, because the pty behind
+    // it can be closed by the emulator while a shell still points at it.
+    fs::Inode* controlling_terminal() const { return m_controlling_terminal; }
+    void set_controlling_terminal(fs::Inode* inode);
+
     // Runs `callback` for every process in a group. Used by kill(-pgid) and by
     // the terminal, which signals a whole job rather than one process.
     static usize for_each_in_group(pid_t pgid, void (*callback)(Process&, void*), void* context);
@@ -189,6 +203,7 @@ private:
 
     mm::AddressSpace* m_address_space { nullptr };
     fs::Inode* m_working_directory { nullptr };
+    fs::Inode* m_controlling_terminal { nullptr };
 
     FileDescriptorEntry m_descriptors[MAX_FILE_DESCRIPTORS] {};
 

@@ -14,6 +14,7 @@
  * hit-testing finds what is under a point.
  */
 
+#include "terminal.h"
 #include "ui.h"
 
 #include <stdio.h>
@@ -53,6 +54,8 @@ UiWidget* ui_window_focused(UiWindow* window)
 {
     return window != NULL ? window->focused : NULL;
 }
+
+#define MAX_ROW_TEXT 512
 
 static int s_checks;
 static int s_failures;
@@ -151,6 +154,121 @@ static void noop(UiWidget* widget, void* user)
 {
     (void)widget;
     (void)user;
+}
+
+/* --- the terminal ------------------------------------------------------------
+ *
+ * The escape parser is the one part of the toolkit with no visual answer to
+ * "is it right": a cell either holds the character it should or it does not.
+ * Checking it here rather than by looking at a screenshot is the difference
+ * between knowing and hoping, and it costs a millisecond.
+ */
+
+static void feed(UiWidget* terminal, const char* text)
+{
+    ui_terminal_feed(terminal, text, (int)strlen(text));
+}
+
+/* The visible screen row as a string, trailing blanks trimmed. */
+static void row_text(UiWidget* terminal, int y, char* out, size_t size)
+{
+    int const columns = ui_terminal_columns(terminal);
+    size_t length = 0;
+
+    for (int x = 0; x < columns && length + 1 < size; ++x)
+        out[length++] = (char)ui_terminal_character_at(terminal, x, y);
+
+    while (length > 0 && out[length - 1] == ' ')
+        --length;
+    out[length] = '\0';
+}
+
+static void check_row(UiWidget* terminal, int y, const char* expected, const char* what)
+{
+    char actual[MAX_ROW_TEXT];
+    row_text(terminal, y, actual, sizeof(actual));
+
+    ++s_checks;
+    if (strcmp(actual, expected) != 0) {
+        ++s_failures;
+        printf("  FAIL %s: expected [%s], got [%s]\n", what, expected, actual);
+    }
+}
+
+static void check_terminal(const UiFonts* fonts)
+{
+    static UiWindow window;
+    window.fonts = *fonts;
+
+    UiWidget* terminal = ui_terminal_create(NULL, NULL);
+    terminal->window = &window;
+    terminal->rect.width = ui_text_width(fonts->mono, "M") * 40;
+    terminal->rect.height = ui_font_line_height(fonts->mono) * 6;
+    terminal->klass->layout(terminal);
+
+    check(ui_terminal_columns(terminal) == 40, "the grid is as wide as the widget");
+    check(ui_terminal_rows(terminal) == 6, "and as tall");
+
+    feed(terminal, "hello");
+    check_row(terminal, 0, "hello", "plain text lands on the first row");
+    check(ui_terminal_cursor_x(terminal) == 5, "and the cursor follows it");
+
+    feed(terminal, "\r\nworld");
+    check_row(terminal, 1, "world", "a newline starts the next row");
+    check(ui_terminal_cursor_y(terminal) == 1, "and moves the cursor down one");
+
+    /* Split across two feeds, which is how a pty actually delivers them: the
+     * shell writes an escape sequence and the read boundary falls inside it. */
+    feed(terminal, "\r\n\x1b");
+    feed(terminal, "[31mred");
+    check_row(terminal, 2, "red", "an escape sequence split across reads is still one sequence");
+
+    /* The escape is consumed rather than printed -- a parser that gives up
+     * mid-sequence spews `[31m` onto the screen, which is the classic symptom. */
+    feed(terminal, "\x1b[1;3Hx");
+    check(ui_terminal_cursor_y(terminal) == 0, "cursor addressing is one-based");
+    check_row(terminal, 0, "hexlo", "and lands on the column asked for");
+
+    feed(terminal, "\x1b[K");
+    check_row(terminal, 0, "hex", "erase to end of line stops at the cursor");
+
+    /* An omitted parameter counts as one, so the 7 here is the second. */
+    feed(terminal, "\x1b[;7m!");
+    check_row(terminal, 0, "hex!", "an empty leading parameter does not shift the rest");
+
+    feed(terminal, "\x1b[2J");
+    check_row(terminal, 0, "", "erase display clears the screen");
+    check_row(terminal, 2, "", "all of it");
+
+    /* Wrapping, and then scrolling: six rows of forty, written as one line. */
+    feed(terminal, "\x1b[H");
+    for (int i = 0; i < 7; ++i) {
+        char line[64];
+        snprintf(line, sizeof(line), "line %d\r\n", i);
+        feed(terminal, line);
+    }
+    /* Seven lines and seven newlines into six rows: the last newline scrolls
+     * too, so the newest text sits one row above the bottom. */
+    check_row(terminal, 4, "line 6", "output past the last row scrolls");
+    check_row(terminal, 5, "", "the cursor's own row is the blank one");
+    check_row(terminal, 0, "line 2", "and the top of the screen moves with it");
+
+    char wide[64];
+    memset(wide, 'w', 45);
+    wide[45] = '\0';
+    feed(terminal, "\x1b[2J\x1b[H");
+    feed(terminal, wide);
+    check(ui_terminal_character_at(terminal, 4, 1) == 'w', "a line longer than the grid wraps");
+    check(ui_terminal_character_at(terminal, 5, 1) == ' ', "and stops where it ran out");
+
+    /* A resize throws the grid away, which is the documented behaviour: it is
+     * better than reflowing it wrongly. What must not happen is a stale size. */
+    terminal->rect.width = ui_text_width(fonts->mono, "M") * 20;
+    terminal->klass->layout(terminal);
+    check(ui_terminal_columns(terminal) == 20, "a resize reshapes the grid");
+    check_row(terminal, 0, "", "and clears it rather than reflowing it");
+
+    ui_widget_destroy(terminal);
 }
 
 /* --- the gallery -------------------------------------------------------------- */
@@ -303,6 +421,8 @@ int main(int argc, char** argv)
     check(different > surface.width, "the gallery painted something");
 
     surface_write_ppm(&surface, output);
+
+    check_terminal(&fonts);
 
     ui_widget_destroy(root);
     ui_fonts_close(&fonts);

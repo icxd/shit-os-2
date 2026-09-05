@@ -15,6 +15,7 @@
 #define TCGETS 0x5401
 #define TCSETS 0x5402
 #define TIOCGWINSZ 0x5413
+#define TIOCSWINSZ 0x5414
 
 /*
  * Which process group owns the terminal. Everything about job control comes
@@ -23,6 +24,13 @@
  */
 #define TIOCGPGRP 0x540F
 #define TIOCSPGRP 0x5410
+
+/*
+ * Claim this terminal as the session's controlling terminal, which is what
+ * makes `/dev/tty` mean it. A session leader does this after `setsid`; it is
+ * the only way a pty ever becomes one, there being no path to open it by.
+ */
+#define TIOCSCTTY 0x540E
 
 struct winsize {
     u16 ws_row;

@@ -54,7 +54,7 @@ the top bit set.
 | 22 | `unlink` | `(const char* path)` | |
 | 23 | `chdir` | `(const char* path)` | |
 | 24 | `getcwd` | `(char* buf, size_t size)` | Rebuilt by walking parent pointers. |
-| 25 | `ioctl` | `(int fd, unsigned request, void* arg)` | Bounced through the kernel; devices never see a user pointer. `TIOCGPGRP`/`TIOCSPGRP` are how the terminal changes hands. |
+| 25 | `ioctl` | `(int fd, unsigned request, void* arg)` | Bounced through the kernel; devices never see a user pointer. `TIOCGPGRP`/`TIOCSPGRP` are how the terminal changes hands, and `TIOCSCTTY` is how a session gets one at all -- see `/dev/tty` below. |
 | 26 | `kill` | `(pid_t pid, int signal)` | Signal 0 is the existence check. A negative pid addresses a process group; `-1` is everything but init. |
 | 27 | `sigaction` | `(int sig, const struct sigaction*, struct sigaction*)` | libc fills in `sa_restorer`. |
 | 28 | `sigreturn` | `()` | Called by the libc restorer, never directly. |
@@ -80,6 +80,7 @@ the top bit set.
 | 48 | `mkdirat` | `(int dirfd, const char* path, mode_t mode)` | |
 | 49 | `fchmodat` | `(int dirfd, const char* path, mode_t mode, int flags)` | |
 | 50 | `mkfifo` | `(const char* path, mode_t mode)` | A name in the tree with a pipe behind it. Opening one end blocks until the other opens, unless `O_NONBLOCK`; `O_RDWR` is both ends and never blocks. |
+| 51 | `openpty` | `(int* master_out, int* slave_out)` | Both ends of a pseudo-terminal, in one call. There is no `/dev/pts`: the pair is reachable only through the two descriptors, which is why they are returned together rather than opened by name. The slave carries a line discipline of its own -- canonical mode, echo, `^C` -- and answers the terminal ioctls; so does the master, because the emulator is the only side that knows how big the window is. |
 
 The `at` family resolves against the descriptor's inode rather than against a
 rebuilt path, which is the entire point of it: `du`, `rm -r` and `cp -r`
@@ -105,6 +106,25 @@ ported software should never need one — they exist so that `ps`, `free` and
 
 A `/proc` filesystem should replace the first three; see
 [roadmap.md](roadmap.md).
+
+## `/dev/tty`
+
+Not a device: it resolves, on every call, to whichever terminal the calling
+process's session is attached to, and reports `ENXIO` when there is none. A
+program whose output is in a pipe still has a terminal, and this is the only
+way to reach it -- which is why every shell opens it before deciding whether it
+can do job control.
+
+A session gets a controlling terminal by claiming one with `TIOCSCTTY`, which
+only a session leader may do. `init` claims the console; `forkpty` claims the
+pty in the child after `setsid`. It is inherited across `fork` and `exec` and
+dropped by `setsid`, because a new session is by definition attached to
+nothing yet.
+
+The implicit POSIX rule -- that a session leader opening a terminal by name
+acquires it -- is deliberately *not* implemented. `TIOCSCTTY` is explicit, a
+pty has no name to be opened by anyway, and the implicit rule mostly surprises
+people.
 
 ## Not implemented
 

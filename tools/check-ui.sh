@@ -46,6 +46,7 @@ fi
     "$ROOT/user/libui/paint.c" \
     "$ROOT/user/libui/widget.c" \
     "$ROOT/user/libui/controls.c" \
+    "$ROOT/user/libui/terminal.c" \
     "$ROOT/user/libui/test/uicheck.c" \
     -lm -o "$WORK/check"
 

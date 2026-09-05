@@ -7,6 +7,9 @@
 #
 #   --settle  how long to wait after typing before capturing, for commands
 #             that take a while to produce their output
+#
+# A key of the form `wait:2.5` in --keys is a pause instead of a keystroke,
+# which is how you type into a program you have just started.
 
 set -eu
 

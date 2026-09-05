@@ -12,7 +12,11 @@
 
 #define _PATH_BSHELL "/bin/sh"
 #define _PATH_DEVNULL "/dev/null"
-#define _PATH_TTY "/dev/tty0"
+/* The *controlling* terminal, not the console. A shell asks this who owns the
+ * foreground, and pointing it at /dev/tty0 means every shell under a
+ * pseudo-terminal asks the wrong terminal and stops itself waiting for a turn
+ * that never comes. */
+#define _PATH_TTY "/dev/tty"
 #define _PATH_CONSOLE "/dev/console"
 #define _PATH_DEFPATH "/bin"
 #define _PATH_STDPATH "/bin"

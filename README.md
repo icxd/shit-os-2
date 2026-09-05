@@ -30,13 +30,14 @@ It is still not useful. It is now genuinely an operating system.
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
 | **Graphics** | `/dev/fb0` mapped straight into a process, `/dev/mouse0`, `/dev/kbdraw` with press and release events |
 | **Desktop** | A window server in userland: real windows, titlebars, dragging, stacking, focus, click-to-raise. Clients draw into shared memory, so no pixel is ever sent as a message |
-| **Toolkit** | Our own TrueType rasteriser, and a retained-mode widget library on top of it: boxes that lay out, labels, buttons, checkboxes, text fields, hover and focus |
+| **Toolkit** | Our own TrueType rasteriser, and a retained-mode widget library on top of it: boxes that lay out, labels, buttons, checkboxes, text fields, hover and focus, anti-aliased rounded rectangles and shadows |
+| **Terminal** | Pseudo-terminals, a controlling terminal per session with a real `/dev/tty`, and a VT100 emulator as a widget: colour, cursor addressing, erase, 2000 lines of scrollback. `dash` runs in a window |
 | **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard, PS/2 mouse and CMOS clock drivers, written in C |
-| **Userland** | Ring 3, 50 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, the `at` family, job control with process groups and sessions, a TTY with canonical line discipline |
+| **Userland** | Ring 3, 51 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, the `at` family, job control with process groups and sessions, a TTY with canonical line discipline, pseudo-terminals |
 | **libc** | Our own: stdio, an allocator that is not linear in the heap, a libm checked in ULPs, and a POSIX regex engine |
-| **Programs** | 103 in `/bin`. Ours are `init` `sh` `ps` `free` `lsmod` `stty`; the coreutils come from sbase |
+| **Programs** | 108 in `/bin`. Ours are `init` `sh` `ps` `free` `lsmod` `stty` `terminal`; the coreutils come from sbase |
 | **Ports** | **Lua 5.4**, **dash** and **sbase**, all unpatched, built against our libc |
-| **Tests** | 220 assertions in the kernel at every boot, 379 more from ring 3 run by `/etc/rc` before the shell, and four host-side checks that need something the target cannot provide |
+| **Tests** | 220 assertions in the kernel at every boot, 412 more from ring 3 run by `/etc/rc` before the shell, and five host-side checks that need something the target cannot provide |
 
 The shell has builtins, `PATH` lookup, pipelines, `<` `>` `>>` redirection and
 quoting. `^C` interrupts the foreground command. A null dereference in a
@@ -174,6 +175,79 @@ and undefined-behaviour sanitizers and renders every glyph in the font, which
 is the check that matters: a rasteriser is array indexing driven by the
 contents of a file, and the interesting bugs are one-past-the-end writes that
 happen to land somewhere harmless.
+
+## It has a terminal, and a shell inside it
+
+![The terminal](docs/terminal.png)
+
+```
+/ $ wsys &
+/ $ terminal &
+```
+
+Three pieces, in three places, and the split is the point.
+
+**The kernel got pseudo-terminals.** `openpty` is one syscall returning both
+ends, because there is no `/dev/pts` to open them by name and inventing one to
+avoid a two-result call would have been the tail wagging the dog. Writing to
+the master is typing; reading it is what the program on the far side printed.
+Adding them forced something overdue: the line discipline -- canonical mode,
+`^C`, `VERASE`, which process group is in the foreground -- was tangled into
+the console TTY, and a pty needs exactly the same thing. It is now
+`LineDiscipline`, and the console and every pty share one copy of it.
+
+**The emulator is a widget.** `user/libui/terminal.c` is a cell grid, a
+scrollback ring and a parser: SGR colour and bold, cursor addressing, erase,
+the modes a shell actually sets. The parser is a state machine rather than a
+loop over a buffer, because escape sequences arrive split across reads -- the
+shell writes `\033[31m` and the read boundary lands after the escape -- and a
+parser that cannot be interrupted mid-sequence turns that into `[31m` on the
+screen every time it happens. Scrollback is a ring covering history and screen
+together, so scrolling moves an index rather than copying a screenful.
+
+**The application is the wiring, and almost nothing else.** `user/wsys/terminal.c`
+opens a pty, `forkpty`s `dash` onto the far end, and pumps bytes between the
+master and the widget. That it is that short is the evidence the other two
+pieces are in the right place.
+
+Three bugs, and each one is a different way of getting *whose* wrong.
+
+**The shell that would not start.** The window came up, keystrokes echoed --
+so the pty round trip through the kernel worked -- and dash printed nothing at
+all. It was not dead: `waitpid` said *stopped*, by `SIGTTIN`. Tracing the
+signal showed dash sending it to itself, which dash does in exactly one place:
+the loop that waits until the terminal's foreground group is its own. It was
+asking the wrong terminal. `_PATH_TTY` in our libc was `/dev/tty0` -- a real
+device, the console -- so a shell under a pty asked the *console* who owned the
+foreground, got the boot script's group, and correctly concluded it was in the
+background. Of somebody else's terminal. Forever.
+
+The fix is the thing that was missing: `/dev/tty` is not a device but a
+question -- *which terminal is this session attached to?* -- answered on every
+call. So the kernel now tracks a controlling terminal per process: claimed with
+`TIOCSCTTY` (`init` claims the console, `forkpty` claims the pty in the child),
+inherited across `fork` and `exec`, dropped by `setsid` because that is what
+starting a session means. `/dev/tty` forwards to whatever that is, and reports
+`ENXIO` when there is nothing.
+
+The other two are both about *who else is holding this*:
+
+- The pty adopted its first reader as the foreground process group, copying
+  what the console does. Closing the master then sent `SIGHUP` to the
+  foreground group -- which was the program holding the master. It hung up on
+  itself, and took the boot script with it. A console adopts readers because
+  there is nothing else to decide who is in the foreground; a pty has an
+  emulator that knows.
+- Closing the terminal left its window on screen. The server learns a client is
+  gone by reading end of file on its channel, and end of file needs the *last*
+  writer to close -- but `forkpty` had handed a copy of that descriptor to the
+  shell. The client channel is `O_CLOEXEC` now, which is the fix for every
+  client that ever forks rather than for this one.
+
+`tools/check-ui.sh` now drives the parser on the host as well as painting the
+gallery: feeding an escape sequence in two halves, checking cursor addressing
+is one-based, checking that erasing to end of line stops where the cursor is.
+Those are facts rather than judgements, and a screenshot cannot check them.
 
 ## Building
 

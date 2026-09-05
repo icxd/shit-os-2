@@ -5,3 +5,4 @@
 add_shitos_program(wsys SOURCES wsys.c LIBRARIES shitos_libui)
 add_shitos_program(wsysdemo SOURCES wsysdemo.c)
 add_shitos_program(uidemo SOURCES uidemo.c LIBRARIES shitos_libui)
+add_shitos_program(terminal SOURCES terminal.c LIBRARIES shitos_libui)

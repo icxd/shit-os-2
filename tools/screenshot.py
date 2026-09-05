@@ -45,6 +45,13 @@ with tempfile.TemporaryDirectory() as tmp:
             time.sleep(0.35)
 
         for key in keys.split():
+            # `wait:N` is a pause rather than a key. Capturing anything that
+            # starts a program needs one: the keys after `wsys &` have to
+            # arrive once the window server owns the screen, not while it is
+            # still coming up, and 0.35s between keystrokes is not enough.
+            if key.startswith("wait:"):
+                time.sleep(float(key[len("wait:"):]))
+                continue
             command("sendkey " + key)
         # Give whatever was typed time to finish before capturing.
         if keys:

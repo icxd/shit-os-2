@@ -12,7 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 static void print_motd(void)
@@ -83,6 +85,14 @@ int main(int argc, char** argv, char** envp)
     /* init must not be killed by anything the terminal can send. */
     signal(SIGINT, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
+
+    /*
+     * Claim the console as this session's controlling terminal. init leads the
+     * session everything on the console belongs to, and without this `/dev/tty`
+     * resolves to nothing for every program it ever starts -- which a shell
+     * reads as "no terminal" and quietly turns job control off.
+     */
+    (void)ioctl(0, TIOCSCTTY, 0);
 
     printf("\n");
     print_motd();

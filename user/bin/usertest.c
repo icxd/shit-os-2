@@ -16,16 +16,19 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <poll.h>
+#include <pty.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -993,6 +996,302 @@ static void test_signal_wakes_blocked_reader(void)
     unlink(path);
 }
 
+/*
+ * Pseudo-terminals. The point of one is that the program on the slave cannot
+ * tell it apart from the console, so the checks are all "does it behave like a
+ * terminal": canonical mode holds a line until return, echo comes back to the
+ * master, raw mode delivers immediately, ^C reaches the foreground group, and
+ * the window size is something a shell can ask for and be told.
+ */
+static void test_pty(void)
+{
+    int master = -1;
+    int slave = -1;
+    check(openpty(&master, &slave, NULL, NULL, NULL) == 0, "opening a pty pair");
+    if (master < 0 || slave < 0)
+        return;
+
+    check(isatty(slave), "the slave is a terminal");
+
+    /* The size an emulator sets is the size the shell is told. */
+    struct winsize wanted = { .ws_row = 30, .ws_col = 100 };
+    check(ioctl(master, TIOCSWINSZ, &wanted) == 0, "setting the window size from the master");
+
+    struct winsize seen;
+    memset(&seen, 0, sizeof(seen));
+    check(ioctl(slave, TIOCGWINSZ, &seen) == 0, "reading it back from the slave");
+    check(seen.ws_row == 30 && seen.ws_col == 100, "and it is the size that was set");
+
+    /*
+     * Canonical mode. Typing at the master without a newline must leave the
+     * slave's read blocked, which is checked here by poll rather than by
+     * actually blocking -- a test that hangs is worse than a test that fails.
+     */
+    check(write(master, "partial", 7) == 7, "typing at the master");
+
+    struct pollfd waiting = { .fd = slave, .events = POLLIN, .revents = 0 };
+    check(poll(&waiting, 1, 50) == 0, "an unterminated line is not readable yet");
+
+    check(write(master, "\n", 1) == 1, "pressing return");
+    waiting.revents = 0;
+    check(poll(&waiting, 1, 200) == 1, "the finished line is readable");
+
+    char buffer[64];
+    memset(buffer, 0, sizeof(buffer));
+    ssize_t got = read(slave, buffer, sizeof(buffer) - 1);
+    check(got == 8, "the slave reads the whole line");
+    check(strcmp(buffer, "partial\n") == 0, "and it is what was typed");
+
+    /* Echo went back to the master, which is what the person typing sees. */
+    memset(buffer, 0, sizeof(buffer));
+    got = read(master, buffer, sizeof(buffer) - 1);
+    check(got > 0, "the master sees the echo");
+    check(strncmp(buffer, "partial", 7) == 0, "and the echo is what was typed");
+
+    /* What the slave writes comes out of the master, with a newline turned
+     * into a carriage return as well -- output processing the emulator would
+     * otherwise have to do itself. */
+    check(write(slave, "out\n", 4) == 4, "the slave writes");
+    memset(buffer, 0, sizeof(buffer));
+    got = read(master, buffer, sizeof(buffer) - 1);
+    check(got == 5, "the master reads it, one byte longer");
+    check(strcmp(buffer, "out\r\n") == 0, "because the newline became a carriage return too");
+
+    /* Raw mode: no waiting for a newline, and no echo. */
+    struct termios raw;
+    check(ioctl(slave, TCGETS, &raw) == 0, "reading the terminal settings");
+    raw.c_lflag &= ~(unsigned)(ICANON | ECHO);
+    check(ioctl(slave, TCSETS, &raw) == 0, "switching to raw mode");
+
+    check(write(master, "x", 1) == 1, "typing one byte in raw mode");
+    waiting.revents = 0;
+    check(poll(&waiting, 1, 200) == 1, "which is readable immediately");
+    memset(buffer, 0, sizeof(buffer));
+    check(read(slave, buffer, 1) == 1 && buffer[0] == 'x', "and it is that byte");
+
+    close(slave);
+    close(master);
+}
+
+/*
+ * The whole arrangement, the way a terminal emulator uses it: fork a child
+ * onto the slave and talk to it through the master.
+ */
+/*
+ * The same thing, but with an exec across it -- which is what a terminal
+ * emulator actually does, and is a different question: a forked child keeps
+ * everything the parent set up, and an exec'd one keeps only what survives
+ * exec. A shell is the strictest reader of that difference there is.
+ */
+/*
+ * And interactively, which is the case the terminal emulator actually runs and
+ * the one with the most to go wrong: an interactive shell wants a controlling
+ * terminal, a foreground process group and a `tcgetattr` that answers.
+ */
+/*
+ * /dev/tty is not a device but a question: which terminal is this session
+ * attached to? The answer has to be the pty inside a pty, and the console
+ * outside one, and getting that wrong is invisible until a shell asks.
+ */
+static void test_controlling_terminal(void)
+{
+    /* Out here it is the console, which init claimed and everything since has
+     * inherited. */
+    int const console = open("/dev/tty", O_RDWR);
+    check(console >= 0, "/dev/tty resolves to something out here");
+    if (console >= 0)
+        close(console);
+
+    int master = -1;
+    pid_t child = forkpty(&master, NULL, NULL, NULL);
+    if (child < 0) {
+        check(0, "forkpty for the controlling terminal test");
+        return;
+    }
+
+    if (child == 0) {
+        /* In here it must be the pty -- and the proof is that writing to it
+         * comes out of the master, which the console could never do. */
+        int const own = open("/dev/tty", O_WRONLY);
+        if (own < 0)
+            _exit(1);
+        (void)write(own, "via-dev-tty\n", 12);
+        close(own);
+        _exit(0);
+    }
+
+    char seen[128];
+    memset(seen, 0, sizeof(seen));
+    size_t total = 0;
+    int found = 0;
+
+    for (int attempt = 0; attempt < 40 && !found; ++attempt) {
+        struct pollfd waiting = { .fd = master, .events = POLLIN, .revents = 0 };
+        if (poll(&waiting, 1, 100) != 1)
+            continue;
+
+        ssize_t const got = read(master, seen + total, sizeof(seen) - 1 - total);
+        if (got <= 0)
+            break;
+        total += (size_t)got;
+        seen[total] = '\0';
+        found = strstr(seen, "via-dev-tty") != NULL;
+    }
+    check(found, "and to the pty inside one");
+
+    close(master);
+    int status = 0;
+    waitpid(child, &status, 0);
+}
+
+static void test_forkpty_interactive_shell(void)
+{
+    int master = -1;
+    pid_t child = forkpty(&master, NULL, NULL, NULL);
+    check(child >= 0, "forkpty for an interactive shell");
+    if (child < 0)
+        return;
+
+    if (child == 0) {
+        /* What the shell is about to look at. dash refuses to run interactively
+         * until the terminal's foreground group is its own, and reports
+         * nothing at all while it waits. */
+        execl("/bin/dash", "dash", "-i", NULL);
+        _exit(127);
+    }
+
+    char seen[512];
+    memset(seen, 0, sizeof(seen));
+    size_t total = 0;
+    int found = 0;
+
+    /* Give it a moment to come up, then ask it something only a running shell
+     * can answer. */
+    for (int attempt = 0; attempt < 80 && !found; ++attempt) {
+        if (attempt == 5)
+            (void)write(master, "echo interactive-pty\n", 21);
+
+        struct pollfd waiting = { .fd = master, .events = POLLIN, .revents = 0 };
+        if (poll(&waiting, 1, 100) != 1)
+            continue;
+
+        ssize_t const got = read(master, seen + total, sizeof(seen) - 1 - total);
+        if (got <= 0)
+            break;
+        total += (size_t)got;
+        seen[total] = '\0';
+
+        /* The echo of what we typed comes back too, so the answer is the
+         * second occurrence -- look past the newline that ends the echo. */
+        char const* first = strstr(seen, "interactive-pty");
+        found = first != NULL && strstr(first + 1, "interactive-pty") != NULL;
+    }
+    check(found, "an interactive shell on a pty answers");
+    if (!found) {
+        int state = 0;
+        pid_t const reaped = waitpid(child, &state, WNOHANG | WUNTRACED);
+        printf("    (saw %u bytes: [%s])\n", (unsigned)total, seen);
+        printf("    (child %d: exited=%d code=%d signalled=%d sig=%d stopped=%d)\n", (int)reaped,
+            WIFEXITED(state), WEXITSTATUS(state), WIFSIGNALED(state), WTERMSIG(state),
+            WIFSTOPPED(state));
+    }
+
+    /* SIGKILL rather than SIGHUP: a shell stopped by SIGTTIN would sit through
+     * anything catchable, and this test must not be able to hang the boot. */
+    kill(child, SIGKILL);
+    close(master);
+    int status = 0;
+    waitpid(child, &status, 0);
+}
+
+static void test_forkpty_exec(void)
+{
+    int master = -1;
+    pid_t child = forkpty(&master, NULL, NULL, NULL);
+    check(child >= 0, "forkpty before an exec");
+    if (child < 0)
+        return;
+
+    if (child == 0) {
+        execl("/bin/dash", "dash", "-c", "echo through-a-pty", NULL);
+        _exit(127);
+    }
+
+    char seen[256];
+    memset(seen, 0, sizeof(seen));
+    size_t total = 0;
+    int found = 0;
+
+    for (int attempt = 0; attempt < 60 && !found; ++attempt) {
+        struct pollfd waiting = { .fd = master, .events = POLLIN, .revents = 0 };
+        if (poll(&waiting, 1, 100) != 1)
+            continue;
+
+        ssize_t const got = read(master, seen + total, sizeof(seen) - 1 - total);
+        if (got <= 0)
+            break;
+        total += (size_t)got;
+        seen[total] = '\0';
+        found = strstr(seen, "through-a-pty") != NULL;
+    }
+    check(found, "a shell exec'd onto a pty writes to it");
+    if (!found)
+        printf("    (saw %u bytes: [%s])\n", (unsigned)total, seen);
+
+    int status = 0;
+    close(master);
+    waitpid(child, &status, 0);
+}
+
+static void test_forkpty(void)
+{
+    int master = -1;
+    pid_t child = forkpty(&master, NULL, NULL, NULL);
+    check(child >= 0, "forkpty");
+    if (child < 0)
+        return;
+
+    if (child == 0) {
+        /* On the far side this is an ordinary program with an ordinary
+         * terminal on its standard descriptors. */
+        char line[64];
+        memset(line, 0, sizeof(line));
+        ssize_t const got = read(0, line, sizeof(line) - 1);
+        if (got <= 0)
+            _exit(1);
+        printf("got:%s", line);
+        fflush(stdout);
+        _exit(0);
+    }
+
+    check(write(master, "hello\n", 6) == 6, "writing to the child's terminal");
+
+    /* Read until the child's own output shows up. The echo comes back first,
+     * so this is not the first thing on the wire. */
+    char seen[256];
+    memset(seen, 0, sizeof(seen));
+    size_t total = 0;
+    int found = 0;
+
+    for (int attempt = 0; attempt < 40 && !found; ++attempt) {
+        struct pollfd waiting = { .fd = master, .events = POLLIN, .revents = 0 };
+        if (poll(&waiting, 1, 100) != 1)
+            continue;
+
+        ssize_t const got = read(master, seen + total, sizeof(seen) - 1 - total);
+        if (got <= 0)
+            break;
+        total += (size_t)got;
+        seen[total] = '\0';
+        found = strstr(seen, "got:hello") != NULL;
+    }
+    check(found, "the child read its terminal and answered on it");
+
+    int status = 0;
+    waitpid(child, &status, 0);
+    close(master);
+}
+
 int main(int argc, char** argv, char** envp)
 {
     (void)envp;
@@ -1001,8 +1300,22 @@ int main(int argc, char** argv, char** envp)
     if (argc == 4 && strcmp(argv[1], "--report-descriptors") == 0)
         return report_descriptors(atoi(argv[2]), atoi(argv[3]));
 
+    /* Re-executed onto a pty, to see job control the way a shell sees it after
+     * an exec rather than before one. */
+    if (argc == 2 && strcmp(argv[1], "--report-groups") == 0) {
+        printf("E pid=%d pgrp=%d pgid0=%d tc=%d\n", (int)getpid(), (int)getpgrp(), (int)getpgid(0),
+            (int)tcgetpgrp(0));
+        fflush(stdout);
+        return 0;
+    }
+
     test_shared_memory();
     test_fifo();
+    test_pty();
+    test_forkpty();
+    test_forkpty_exec();
+    test_forkpty_interactive_shell();
+    test_controlling_terminal();
     test_signal_wakes_blocked_reader();
     test_fcntl();
     test_close_on_exec();

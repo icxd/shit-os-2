@@ -317,5 +317,18 @@ void ui_window_invalidate(UiWindow*);
 /* Runs until the window is closed. Returns 0 on a clean exit. */
 int ui_window_run(UiWindow*);
 
+/*
+ * The same, watching one more descriptor alongside the window's own. An
+ * application whose work arrives on a pipe, a socket or a pseudo-terminal
+ * cannot use ui_window_run: it would have to choose between blocking on the
+ * window and blocking on its own input.
+ *
+ * `on_ready` is called whenever `extra` has something to read. Returning
+ * non-zero from it closes the window, which is how a terminal notices that its
+ * shell has exited.
+ */
+typedef int (*UiWindowReady)(int fd, void* user);
+int ui_window_pump(UiWindow*, int extra, UiWindowReady on_ready, void* user);
+
 /* Asks the loop to stop, from inside a callback. */
 void ui_window_close(UiWindow*);

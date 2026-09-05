@@ -20,11 +20,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pty.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -468,4 +471,82 @@ char* realpath(const char* path, char* resolved)
         return NULL;
     }
     return output;
+}
+
+/* --- pseudo-terminals ------------------------------------------------------ */
+
+int openpty(int* master, int* slave, char* name, const struct termios* settings,
+    const struct winsize* window)
+{
+    int fds[2];
+    if ((int)__syscall_return(__syscall2(SYS_openpty, (long)&fds[0], (long)&fds[1])) < 0)
+        return -1;
+
+    /* There are no names, so there is nothing honest to write here. Callers
+     * pass null in practice; the argument exists so that code written for
+     * other systems compiles unchanged. */
+    if (name != NULL)
+        name[0] = '\0';
+
+    if (settings != NULL)
+        (void)ioctl(fds[1], TCSETS, (void*)settings);
+    if (window != NULL)
+        (void)ioctl(fds[1], TIOCSWINSZ, (void*)window);
+
+    if (master != NULL)
+        *master = fds[0];
+    if (slave != NULL)
+        *slave = fds[1];
+    return 0;
+}
+
+pid_t forkpty(int* master, char* name, const struct termios* settings, const struct winsize* window)
+{
+    int master_fd = -1;
+    int slave_fd = -1;
+    if (openpty(&master_fd, &slave_fd, name, settings, window) < 0)
+        return -1;
+
+    pid_t child = fork();
+    if (child < 0) {
+        close(master_fd);
+        close(slave_fd);
+        return -1;
+    }
+
+    if (child == 0) {
+        /*
+         * A new session, so the child is not in the parent's job control and
+         * the pty is its terminal rather than whatever the parent had. Without
+         * this a shell in the child would keep trying to drive the console it
+         * inherited.
+         */
+        close(master_fd);
+        setsid();
+
+        dup2(slave_fd, 0);
+        dup2(slave_fd, 1);
+        dup2(slave_fd, 2);
+        if (slave_fd > 2)
+            close(slave_fd);
+
+        /*
+         * Claim the pty as this session's controlling terminal. There is no
+         * path to open it by, so TIOCSCTTY is the only way it can become one
+         * -- and without it `/dev/tty` in anything we exec resolves to the
+         * console, which is somebody else's terminal entirely.
+         */
+        (void)ioctl(0, TIOCSCTTY, 0);
+
+        /* And claim the foreground, so that ^C reaches this process rather
+         * than nobody. A shell will do it again for each job it runs. */
+        pid_t group = getpid();
+        (void)ioctl(0, TIOCSPGRP, &group);
+        return 0;
+    }
+
+    close(slave_fd);
+    if (master != NULL)
+        *master = master_fd;
+    return child;
 }

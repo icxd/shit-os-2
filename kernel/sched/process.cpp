@@ -90,6 +90,11 @@ ErrorOr<Process*> Process::create(char const* name, Process* parent)
     process->m_pgid = parent != nullptr ? parent->m_pgid : process->m_pid;
     process->m_sid = parent != nullptr ? parent->m_sid : process->m_pid;
 
+    // The terminal comes with the session, so a child is attached to whatever
+    // its parent was attached to until it starts a session of its own.
+    if (parent != nullptr)
+        process->set_controlling_terminal(parent->m_controlling_terminal);
+
     // The signal mask and the file creation mask are both inherited across
     // fork and survive exec, which is what makes "block SIGCHLD, then fork"
     // mean anything.
@@ -123,6 +128,11 @@ Process::~Process()
         m_working_directory = nullptr;
     }
 
+    if (m_controlling_terminal != nullptr) {
+        m_controlling_terminal->unref();
+        m_controlling_terminal = nullptr;
+    }
+
     if (m_address_space != nullptr && m_address_space != &mm::AddressSpace::kernel_space()) {
         m_address_space->destroy_user_mappings();
         kfree(m_address_space);
@@ -138,6 +148,15 @@ void Process::set_working_directory(fs::Inode* inode)
     if (m_working_directory != nullptr)
         m_working_directory->unref();
     m_working_directory = inode;
+}
+
+void Process::set_controlling_terminal(fs::Inode* inode)
+{
+    if (inode != nullptr)
+        inode->ref();
+    if (m_controlling_terminal != nullptr)
+        m_controlling_terminal->unref();
+    m_controlling_terminal = inode;
 }
 
 void Process::set_name(char const* name)
@@ -449,8 +468,11 @@ ErrorOr<pid_t> Process::start_session()
 
     m_sid = m_pid;
     m_pgid = m_pid;
-    // A new session has no controlling terminal. Nothing tracks one per
-    // session yet, so this is where that would be dropped.
+
+    // A new session has no controlling terminal. This is the half of setsid
+    // that matters to a terminal emulator: the shell it starts must not still
+    // be pointing at the console its parent was attached to.
+    set_controlling_terminal(nullptr);
     return m_sid;
 }
 

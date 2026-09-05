@@ -9,6 +9,7 @@ add_library(shitos_libui STATIC
     paint.c
     widget.c
     controls.c
+    terminal.c
     window.c
 )
 

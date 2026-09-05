@@ -12,7 +12,7 @@ What exists, what is next, and what is deliberately not being done yet.
 - Per-CPU state, PIT, preemptive round-robin scheduling, wait queues.
 - VFS with a ustar initrd, tmpfs and devfs.
 - Runtime-loadable driver modules against a versioned ABI. PS/2 keyboard.
-- Ring 3: syscall gate, 50 POSIX calls, static ELF loading with correct auxv,
+- Ring 3: syscall gate, 51 POSIX calls, static ELF loading with correct auxv,
   fork/execve/waitpid, pipes, signals with real handler delivery, a TTY with
   canonical line discipline.
 - A C library, reaching an interactive shell.
@@ -40,10 +40,11 @@ What exists, what is next, and what is deliberately not being done yet.
 - A **POSIX regular expression engine** in the libc, written from the
   specification. sbase's `util.h` includes `<regex.h>`, so every one of those
   ninety-four programs needed it. Checked against glibc over 6498 cases.
-- 220 kernel self-test assertions at every boot, 379 more from ring 3 run by
-  `/etc/rc` before the shell, and four host-side checks -- libm accuracy in
-  ULPs, the allocator, the regex engine against glibc, and the TrueType
-  rasteriser under the sanitizers.
+- 220 kernel self-test assertions at every boot, 412 more from ring 3 run by
+  `/etc/rc` before the shell, and five host-side checks -- libm accuracy in
+  ULPs, the allocator, the regex engine against glibc, the TrueType rasteriser
+  under the sanitizers, and the widget toolkit laid out, painted and fed
+  escape sequences.
 
 - **A widget toolkit, and a TrueType rasteriser under it.**
   `user/libui/truetype.c` parses the tables and rasterises quadratic outlines
@@ -56,6 +57,14 @@ What exists, what is next, and what is deliberately not being done yet.
   memory both sides map, so a window's pixels are never sent anywhere; the
   compositor reads them where they already are, into a back buffer, and blits
   only the rectangle that changed.
+- **A terminal, with a shell in it.** `openpty` is a syscall returning both
+  ends of a pseudo-terminal at once, there being no `/dev/pts` to open them by
+  name. Getting there forced the line discipline out of the console TTY and
+  into a `LineDiscipline` that the console and every pty share, which is where
+  it should have been all along. `user/libui/terminal.c` is the emulator as a
+  widget -- a cell grid, 2000 lines of scrollback in a ring, and an
+  interruptible parser for SGR colour, cursor addressing and erase -- and
+  `user/wsys/terminal.c` is a hundred lines of wiring between the two.
 - **Graphics, from the bottom up.** `/dev/fb0` hands a process the real
   framebuffer through `mmap` rather than a copy of it; a PS/2 mouse driver is
   the third loadable module and needed no ABI additions at all, which is the
@@ -106,6 +115,36 @@ because there is no call that swaps the mask and waits atomically. It is
 race-free -- see the comment on it -- but a real one would not need a comment.
 
 ## Fixed, and worth remembering
+
+**A shell that would not start, because `/dev/tty` did not exist.** The
+terminal emulator came up, keystrokes echoed, and dash printed nothing. It was
+stopped by `SIGTTIN`, sent by itself, from the loop that waits until the
+terminal's foreground group is its own -- it was asking the wrong terminal.
+`_PATH_TTY` was `/dev/tty0`, a real device: the console. So a shell under a pty
+asked the console who owned the foreground, got somebody else's group, and
+correctly concluded it was a background job. The fix was the missing piece:
+a controlling terminal per process, claimed with `TIOCSCTTY`, inherited across
+fork and exec, dropped by `setsid` -- and a `/dev/tty` that resolves to it on
+every call rather than naming a device. The general lesson: *a name that looks
+like a device but means "whichever one is yours" cannot be aliased to a real
+one*, and the failure is silent until something asks the question properly.
+
+**A pseudo-terminal that hung up on itself.** The pty copied the console and
+adopted its first reader as the foreground process group. Closing the master
+sends `SIGHUP` to the foreground group, and the master's owner *was* the
+foreground group, so a terminal closing killed the program that closed it --
+and, because that program shared a group with the boot script, the boot script
+too. A console adopts readers because nothing else can decide who is in the
+foreground; a pty has an emulator that knows, so it now waits to be told.
+
+**A window that outlived the process that owned it.** The window server learns
+a client is gone by reading end of file on its channel, and end of file needs
+the last writer to close. The terminal forks a shell, and the shell inherited
+a copy of the write end -- so closing the terminal left its window on screen
+for as long as the shell lived. The channel is `O_CLOEXEC` now. The general
+shape is worth keeping: *end of file is about the last holder, not the first*,
+and any descriptor whose closing means something must not be allowed to leak
+across an `exec`.
 
 **A signal handler that returned to a random address.** `sa_restorer` is a
 libc-internal field, so a program that fills a `struct sigaction` in field by
