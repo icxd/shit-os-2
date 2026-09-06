@@ -107,14 +107,41 @@ answers for one hardcoded account, and no mode bit is ever checked. `umask` is
 applied at creation, which is the half that matters for getting the recorded
 modes right before there is anything to check them against.
 
-**A wait queue per inode, so `poll` can sleep on the right thing.** It polls
-the timer today, which is honest and wasteful.
+**A wait queue per inode, so `poll` can sleep on the right one.** It sleeps on
+a single queue that every wake touches, which is correct and wakes more
+threads than it needs to. Per-inode queues need a thread to be able to wait on
+several at once, which needs more than the one list node a thread has.
 
 **`sigsuspend` and `sigpending` as syscalls.** The libc `sigsuspend` polls,
 because there is no call that swaps the mask and waits atomically. It is
 race-free -- see the comment on it -- but a real one would not need a comment.
 
 ## Fixed, and worth remembering
+
+**A desktop that ran at four frames a second.** Three causes, each locally
+reasonable. The compositor tracked damage and applied it to the final blit --
+after drawing the whole desktop gradient and every window in full, so moving
+the cursor one pixel repainted the screen; the painter's clip existed and was
+honoured everywhere, and the compositor simply never set it. A focused
+window's shadow is fourteen stacked rounded rectangles and each was filled
+across its whole area, including the part the opaque window covers a moment
+later -- about five million alpha blends a frame, all discarded. And `poll`
+slept on a four-millisecond timer, which a keystroke crosses three times on
+its way to the screen.
+
+206 ms a frame became 7.8 ms. The lesson worth keeping is that all three were
+invisible until something printed a number: the code looked careful, the
+damage tracking was real, and it was being applied one step too late. The
+measurement went in first, and `wsysbench` is still there.
+
+**Waking a poll without losing the wake.** One queue that every `wake_all`
+wakes, rather than a per-inode queue a poll cannot register on -- a thread can
+only be on one wait list, because the node is shared with the sleeper list.
+The race that comes with it is the interesting part: a descriptor that becomes
+ready between the readiness scan and the sleep would wake a queue nobody is on
+yet, and with no timeout that sleep never ends. A generation counter read
+*before* the scan and compared under the same lock the wake takes closes it --
+the wake is either seen by the scan or seen by the compare.
 
 **A shell that would not start, because `/dev/tty` did not exist.** The
 terminal emulator came up, keystrokes echoed, and dash printed nothing. It was

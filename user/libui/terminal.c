@@ -99,6 +99,10 @@ typedef struct UiTerminal {
     unsigned char attributes;
     signed char foreground, background;
 
+    /* Which rows of the visible screen have changed since the last paint.
+     * A shell printing a line touches one of twenty-four. */
+    int dirty_top, dirty_bottom;
+
     ParserState state;
     int parameters[MAX_PARAMETERS];
     int parameter_count;
@@ -116,6 +120,31 @@ static Cell* row_at(UiTerminal* terminal, int index)
 static Cell* screen_row(UiTerminal* terminal, int y)
 {
     return row_at(terminal, terminal->used - terminal->rows + y);
+}
+
+static void touch_rows(UiTerminal* terminal, int from, int to)
+{
+    if (from < 0)
+        from = 0;
+    if (to > terminal->rows)
+        to = terminal->rows;
+    if (from >= to)
+        return;
+
+    if (terminal->dirty_top >= terminal->dirty_bottom) {
+        terminal->dirty_top = from;
+        terminal->dirty_bottom = to;
+        return;
+    }
+    if (from < terminal->dirty_top)
+        terminal->dirty_top = from;
+    if (to > terminal->dirty_bottom)
+        terminal->dirty_bottom = to;
+}
+
+static void touch_all(UiTerminal* terminal)
+{
+    touch_rows(terminal, 0, terminal->rows);
 }
 
 /*
@@ -155,6 +184,7 @@ static void scroll_up(UiTerminal* terminal)
         terminal->top = (terminal->top + 1) % terminal->storage_rows;
     }
     clear_row(terminal, screen_row(terminal, terminal->rows - 1));
+    touch_all(terminal);
 
     /* Scrolling pins the view to the bottom: new output is what the reader
      * wants to see, and staying where they were would be a screen that never
@@ -172,6 +202,8 @@ static void reset_grid(UiTerminal* terminal)
 
     for (int i = 0; i < terminal->storage_rows; ++i)
         clear_row(terminal, terminal->storage + (size_t)i * terminal->columns);
+
+    touch_all(terminal);
 }
 
 /* --- the parser --------------------------------------------------------------
@@ -267,6 +299,7 @@ static void erase_in_line(UiTerminal* terminal, int mode)
         to = terminal->cursor_x + 1;
 
     erase_cells(terminal, row, from, to);
+    touch_rows(terminal, terminal->cursor_y, terminal->cursor_y + 1);
 }
 
 static void execute_csi(UiTerminal* terminal, char final)
@@ -329,6 +362,7 @@ static void put_character(UiTerminal* terminal, char c)
     cell->attributes = terminal->attributes;
     cell->foreground = terminal->foreground;
     cell->background = terminal->background;
+    touch_rows(terminal, terminal->cursor_y, terminal->cursor_y + 1);
     ++terminal->cursor_x;
 }
 
@@ -427,9 +461,25 @@ static void feed_byte(UiTerminal* terminal, char c)
 void ui_terminal_feed(UiWidget* widget, const char* bytes, int length)
 {
     UiTerminal* terminal = (UiTerminal*)widget;
+    if (terminal->storage == NULL)
+        return;
+
+    /* The cursor is a filled block, so wherever it was has to be repainted
+     * too -- otherwise it leaves a copy of itself behind on the row it left. */
+    int const was = terminal->cursor_y;
+
     for (int i = 0; i < length; ++i)
         feed_byte(terminal, bytes[i]);
-    ui_widget_invalidate(widget);
+
+    touch_rows(terminal, was, was + 1);
+    touch_rows(terminal, terminal->cursor_y, terminal->cursor_y + 1);
+
+    if (terminal->dirty_top >= terminal->dirty_bottom)
+        return;
+
+    UiRect const changed = { 0, terminal->dirty_top * terminal->cell_height, widget->rect.width,
+        (terminal->dirty_bottom - terminal->dirty_top) * terminal->cell_height };
+    ui_widget_invalidate_rect(widget, changed);
 }
 
 /* --- painting ------------------------------------------------------------------ */
@@ -469,7 +519,31 @@ static void terminal_paint(UiWidget* widget, UiPainter* painter)
      * this and nothing else. */
     int const first = terminal->used - terminal->rows - terminal->view;
 
-    for (int y = 0; y < terminal->rows; ++y) {
+    /*
+     * Only the rows and columns the clip can show. Walking the whole grid and
+     * letting each cell be clipped away still costs two calls per cell, and
+     * there are nineteen hundred of them.
+     */
+    int const clip_top = cells.clip.y - cells.origin_y;
+    int const clip_bottom = clip_top + cells.clip.height;
+    int const clip_left = cells.clip.x - cells.origin_x;
+    int const clip_right = clip_left + cells.clip.width;
+
+    int first_row = clip_top / terminal->cell_height;
+    int last_row = (clip_bottom + terminal->cell_height - 1) / terminal->cell_height;
+    int first_column = clip_left / terminal->cell_width;
+    int last_column = (clip_right + terminal->cell_width - 1) / terminal->cell_width;
+
+    if (first_row < 0)
+        first_row = 0;
+    if (last_row > terminal->rows)
+        last_row = terminal->rows;
+    if (first_column < 0)
+        first_column = 0;
+    if (last_column > terminal->columns)
+        last_column = terminal->columns;
+
+    for (int y = first_row; y < last_row; ++y) {
         int const index = first + y;
         if (index < 0 || index >= terminal->used)
             continue;
@@ -477,7 +551,7 @@ static void terminal_paint(UiWidget* widget, UiPainter* painter)
         Cell const* row = row_at(terminal, index);
         int const py = y * terminal->cell_height;
 
-        for (int x = 0; x < terminal->columns; ++x) {
+        for (int x = first_column; x < last_column; ++x) {
             Cell const cell = row[x];
 
             unsigned foreground = colour_for(
@@ -509,6 +583,8 @@ static void terminal_paint(UiWidget* widget, UiPainter* painter)
 
     /* The cursor, only where the live screen is: scrolled back into history
      * there is nothing for it to mark. */
+    terminal->dirty_top = terminal->dirty_bottom = 0;
+
     if (terminal->cursor_visible && terminal->view == 0) {
         UiRect const caret = { terminal->cursor_x * terminal->cell_width,
             terminal->cursor_y * terminal->cell_height, terminal->cell_width,
@@ -617,6 +693,7 @@ static int terminal_on_key(UiWidget* widget, const UiKeyEvent* event)
      * with scrollback can do. */
     if (terminal->view != 0) {
         terminal->view = 0;
+        touch_all(terminal);
         ui_widget_invalidate(widget);
     }
 
@@ -643,6 +720,7 @@ static int terminal_on_key(UiWidget* widget, const UiKeyEvent* event)
         if (terminal->view < 0)
             terminal->view = 0;
 
+        touch_all(terminal);
         ui_widget_invalidate(widget);
         return 1;
     }
@@ -673,6 +751,7 @@ static int terminal_on_mouse(UiWidget* widget, const UiMouseEvent* event)
         if (terminal->view < 0)
             terminal->view = 0;
 
+        touch_all(terminal);
         ui_widget_invalidate(widget);
     }
     return 1;

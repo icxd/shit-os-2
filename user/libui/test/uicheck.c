@@ -38,6 +38,20 @@ const UiFonts* ui_window_fonts(UiWindow* window)
     return window != NULL ? &window->fonts : NULL;
 }
 
+/* The last damage rectangle asked for, so a test can assert that a change
+ * asked for a small one. */
+static UiRect s_damage;
+static int s_damaged;
+
+void ui_window_damage(UiWindow* window, int x, int y, int width, int height)
+{
+    if (window == NULL)
+        return;
+    window->needs_paint = 1;
+    s_damage = (UiRect) { x, y, width, height };
+    s_damaged = 1;
+}
+
 void ui_window_invalidate(UiWindow* window)
 {
     if (window != NULL)
@@ -268,21 +282,65 @@ static void check_terminal(const UiFonts* fonts)
     check(ui_terminal_columns(terminal) == 20, "a resize reshapes the grid");
     check_row(terminal, 0, "", "and clears it rather than reflowing it");
 
+    /*
+     * And a line printed onto a screen that is already on display asks to
+     * repaint one row, not the screen. This is the difference between a
+     * terminal that keeps up with a shell and one that does not: the whole
+     * grid is nineteen hundred cells and a printed line changes eighty.
+     *
+     * It has to be painted first. Before that everything really is out of
+     * date, and asking for all of it is the right answer.
+     */
+    int const line_height = ui_font_line_height(fonts->mono);
+    Surface scratch = { .width = terminal->rect.width, .height = terminal->rect.height };
+    scratch.pixels = calloc((size_t)scratch.width * scratch.height, sizeof(unsigned));
+    check(scratch.pixels != NULL, "a surface for the terminal");
+
+    if (scratch.pixels != NULL) {
+        UiPainter into = {
+            .pixels = scratch.pixels,
+            .width = scratch.width,
+            .height = scratch.height,
+            .clip = { 0, 0, scratch.width, scratch.height },
+            .font = fonts->mono,
+            .fonts = fonts,
+        };
+        terminal->klass->paint(terminal, &into);
+
+        s_damaged = 0;
+        feed(terminal, "again\r\n");
+        check(s_damaged, "printing asks for a repaint");
+        check(s_damage.height <= line_height * 2, "and only of the rows that changed");
+
+        free(scratch.pixels);
+    }
+
     ui_widget_destroy(terminal);
 }
 
 /* --- the gallery -------------------------------------------------------------- */
 
+/*
+ * A heading and the row it names, as one group: tight between the two, and
+ * the section's own space above it comes from the parent's spacing. Written
+ * this way so that "which label belongs to which control" is answered by the
+ * layout rather than by reading them.
+ */
 static UiWidget* section(UiWidget* parent, const char* title)
 {
+    UiWidget* group = ui_box_create(UI_VERTICAL);
+    ui_box_set_padding(group, 0);
+    ui_box_set_spacing(group, ui_theme()->spacing_tight);
+    ui_widget_add(parent, group);
+
     UiWidget* heading = ui_label_create(title);
     ui_label_set_style(heading, UI_TEXT_SMALL);
     ui_label_set_colour(heading, ui_theme()->text_dim);
-    ui_widget_add(parent, heading);
+    ui_widget_add(group, heading);
 
     UiWidget* row = ui_box_create(UI_HORIZONTAL);
     ui_box_set_padding(row, 0);
-    ui_widget_add(parent, row);
+    ui_widget_add(group, row);
     return row;
 }
 
@@ -313,6 +371,8 @@ int main(int argc, char** argv)
     ui_widget_add(root, title);
 
     UiWidget* panel = ui_panel_create(UI_VERTICAL);
+    /* Groups are separated; what is inside one is not. */
+    ui_box_set_spacing(panel, ui_theme()->spacing_section);
     panel->expand_x = 1;
     ui_widget_add(root, panel);
 
@@ -366,6 +426,7 @@ int main(int argc, char** argv)
     UiWidget* mono = ui_label_create("Monospace 0O1lI, for the terminal");
     ui_label_set_style(mono, UI_TEXT_MONO);
 
+    ui_box_set_spacing(labels, ui_theme()->spacing_tight);
     ui_widget_add(labels, strong);
     ui_widget_add(labels, bright);
     ui_widget_add(labels, dim);
@@ -392,9 +453,17 @@ int main(int argc, char** argv)
     check_containment(root, "root");
 
     /* Hit testing has to find the deepest thing under a point. */
-    UiWidget* hit
-        = ui_widget_at(root, root->rect.x + panel->rect.x + buttons->rect.x + normal->rect.x + 5,
-            root->rect.y + panel->rect.y + buttons->rect.y + normal->rect.y + 5);
+    /* Walk the parents rather than naming them: the chain from the root to a
+     * button is a layout detail, and a test that spells it out breaks every
+     * time the tree gains a level. */
+    int hit_x = 5;
+    int hit_y = 5;
+    for (UiWidget* w = normal; w != NULL; w = w->parent) {
+        hit_x += w->rect.x;
+        hit_y += w->rect.y;
+    }
+
+    UiWidget* hit = ui_widget_at(root, hit_x, hit_y);
     check(hit == normal, "hit testing finds the button under the pointer");
     check(ui_widget_at(root, -5, -5) == NULL, "and nothing outside the tree");
 

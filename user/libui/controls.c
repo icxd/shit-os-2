@@ -176,9 +176,19 @@ static void button_paint(UiWidget* widget, UiPainter* painter)
     if (!button->is_default)
         ui_stroke_rounded(painter, bounds, theme->corner_radius, theme->border);
 
+    /*
+     * A halo just inside the edge rather than a second hard line. Two solid
+     * strokes side by side read as a thick border somebody drew by accident;
+     * a fading one reads as a glow, which is what it is meant to be. It goes
+     * inside because a widget is clipped to its own rectangle.
+     */
     if (ui_window_focused(widget->window) == widget) {
-        UiRect const inner = { bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2 };
-        ui_stroke_rounded(painter, inner, theme->corner_radius - 1, theme->focus_ring);
+        for (int i = 1; i <= 2; ++i) {
+            UiRect const ring
+                = { bounds.x + i, bounds.y + i, bounds.width - i * 2, bounds.height - i * 2 };
+            ui_stroke_rounded_alpha(
+                painter, ring, theme->corner_radius - i, theme->focus_ring, i == 1 ? 200u : 90u);
+        }
     }
 
     UiPainter styled = *painter;
@@ -399,8 +409,12 @@ static void textfield_paint(UiWidget* widget, UiPainter* painter)
         painter, bounds, theme->corner_radius_small, focused ? theme->accent : theme->border);
 
     if (focused) {
-        UiRect const ring = { bounds.x + 1, bounds.y + 1, bounds.width - 2, bounds.height - 2 };
-        ui_stroke_rounded(painter, ring, theme->corner_radius_small - 1, theme->focus_ring);
+        for (int i = 1; i <= 2; ++i) {
+            UiRect const ring
+                = { bounds.x + i, bounds.y + i, bounds.width - i * 2, bounds.height - i * 2 };
+            ui_stroke_rounded_alpha(painter, ring, theme->corner_radius_small - i,
+                theme->focus_ring, i == 1 ? 200u : 90u);
+        }
     }
 
     UiRect const inner

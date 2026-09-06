@@ -32,6 +32,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_CLIENTS 16
@@ -169,9 +170,31 @@ static unsigned pack(unsigned rgb)
     return (r << g_info.red_shift) | (g << g_info.green_shift) | (b << g_info.blue_shift);
 }
 
+/*
+ * What a frame actually costs. "It feels laggy" is not something you can fix
+ * without a number, and the number that matters here is not time -- which
+ * varies with the host -- but how much work a frame does that it did not need
+ * to. `considered` is the area the damage rectangle asked for; `drawn` is what
+ * the drawing code actually touched. They should be close.
+ */
+static struct {
+    unsigned long frames;
+    unsigned long considered;
+    unsigned long drawn;
+    unsigned long windows;
+    unsigned long micros;
+} g_cost;
+
 static UiPainter g_painter;
 static UiFonts g_fonts;
 
+/*
+ * Clipped to the damage rectangle, not to the screen. The compositor used to
+ * redraw the whole desktop and every window on it and then blit the twenty
+ * pixels that had moved, which is what a cursor crossing an empty desktop
+ * cost. Setting the clip here is most of the fix: the toolkit's drawing
+ * already honours it, so every shape gets the reduction for free.
+ */
 static void painter_reset(void)
 {
     g_painter.pixels = g_back;
@@ -179,12 +202,18 @@ static void painter_reset(void)
     g_painter.height = g_height;
     g_painter.origin_x = 0;
     g_painter.origin_y = 0;
-    g_painter.clip.x = 0;
-    g_painter.clip.y = 0;
-    g_painter.clip.width = g_width;
-    g_painter.clip.height = g_height;
+    g_painter.clip.x = g_dirty_x0;
+    g_painter.clip.y = g_dirty_y0;
+    g_painter.clip.width = g_dirty_x1 - g_dirty_x0;
+    g_painter.clip.height = g_dirty_y1 - g_dirty_y0;
     g_painter.font = g_fonts.body;
     g_painter.fonts = &g_fonts;
+}
+
+/* Does this rectangle have any pixel inside the damaged region? */
+static int intersects_damage(int x0, int y0, int x1, int y1)
+{
+    return x0 < g_dirty_x1 && x1 > g_dirty_x0 && y0 < g_dirty_y1 && y1 > g_dirty_y0;
 }
 
 /* --- windows -------------------------------------------------------------- */
@@ -275,6 +304,16 @@ static void draw_window(struct Window* window)
     int const focused = window->id == focused_window_id();
     UiRect const frame = { window->x, window->y, frame_width(window), frame_height(window) };
 
+    /* Nothing of this window, shadow included, is inside the damage: drawing
+     * it would be pure waste, and with a stack of windows it is most of the
+     * frame. */
+    if (!intersects_damage(window->x - WINDOW_SHADOW_MARGIN, window->y - WINDOW_SHADOW_MARGIN,
+            window->x + frame.width + WINDOW_SHADOW_MARGIN,
+            window->y + frame.height + WINDOW_SHADOW_MARGIN))
+        return;
+
+    ++g_cost.windows;
+
     /*
      * The shadow is what makes a window look like it is above the desktop
      * rather than painted on it, and on macOS it is enormous and very faint.
@@ -333,29 +372,34 @@ static void draw_window(struct Window* window)
     int const ox = content_origin_x(window);
     int const oy = content_origin_y(window);
 
-    for (int row = 0; row < window->height; ++row) {
-        int const py = oy + row;
+    /*
+     * Only the rows and columns inside the damage. Copying a whole 720x440
+     * window because its cursor blinked is a third of a megapixel to show
+     * eight by sixteen of them.
+     */
+    int const from_y = oy > g_dirty_y0 ? oy : g_dirty_y0;
+    int const to_y = oy + window->height < g_dirty_y1 ? oy + window->height : g_dirty_y1;
+    int const from_x = ox > g_dirty_x0 ? ox : g_dirty_x0;
+    int const to_x = ox + window->width < g_dirty_x1 ? ox + window->width : g_dirty_x1;
+
+    if (from_x >= to_x)
+        return;
+
+    for (int py = from_y; py < to_y; ++py) {
         if (py < 0 || py >= g_height)
             continue;
 
-        const unsigned* source = window->pixels + (size_t)row * window->width;
-        unsigned* destination = g_back + (size_t)py * g_width + ox;
+        const unsigned* source = window->pixels + (size_t)(py - oy) * window->width;
+        unsigned* destination = g_back + (size_t)py * g_width;
 
-        int start = 0;
-        int count = window->width;
-        if (ox < 0) {
-            start = -ox;
-            count += ox;
-            destination -= ox;
+        for (int px = from_x; px < to_x; ++px) {
+            if (px < 0 || px >= g_width)
+                continue;
+            destination[px] = source[px - ox];
         }
-        if (ox + window->width > g_width)
-            count = g_width - ox - start;
-        if (count <= 0)
-            continue;
-
-        for (int column = 0; column < count; ++column)
-            destination[column] = source[start + column];
     }
+
+    g_cost.drawn += (unsigned long)(to_x - from_x) * (unsigned long)(to_y - from_y);
 }
 
 static void draw_cursor(void)
@@ -407,7 +451,9 @@ static void draw_desktop(void)
     int const top = COLOUR_DESKTOP_TOP;
     int const bottom = COLOUR_DESKTOP_BOTTOM;
 
-    for (int y = 0; y < g_height; ++y) {
+    /* The gradient is a function of y alone, so a damaged strip needs only its
+     * own rows -- and only the columns that changed within them. */
+    for (int y = g_dirty_y0; y < g_dirty_y1; ++y) {
         unsigned colour = 0;
         for (int shift = 0; shift <= 16; shift += 8) {
             int const from = (top >> shift) & 0xff;
@@ -417,9 +463,12 @@ static void draw_desktop(void)
         }
 
         unsigned* line = g_back + (size_t)y * g_width;
-        for (int x = 0; x < g_width; ++x)
+        for (int x = g_dirty_x0; x < g_dirty_x1; ++x)
             line[x] = colour;
     }
+
+    g_cost.drawn
+        += (unsigned long)(g_dirty_x1 - g_dirty_x0) * (unsigned long)(g_dirty_y1 - g_dirty_y0);
 }
 
 /*
@@ -450,12 +499,25 @@ static void reconcile_focus(void)
     g_last_focus = now;
 }
 
+static unsigned long now_micros(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return 0;
+    return (unsigned long)now.tv_sec * 1000000UL + (unsigned long)(now.tv_nsec / 1000);
+}
+
 static void composite(void)
 {
     reconcile_focus();
 
     if (g_dirty_x0 >= g_dirty_x1)
         return;
+
+    unsigned long const started = now_micros();
+    ++g_cost.frames;
+    g_cost.considered
+        += (unsigned long)(g_dirty_x1 - g_dirty_x0) * (unsigned long)(g_dirty_y1 - g_dirty_y0);
 
     painter_reset();
 
@@ -496,6 +558,7 @@ static void composite(void)
     }
 
     g_dirty_x0 = g_dirty_x1 = 0;
+    g_cost.micros += now_micros() - started;
 }
 
 /* --- clients -------------------------------------------------------------- */
@@ -1026,5 +1089,19 @@ int main(int argc, char** argv)
 
     int release = 0;
     ioctl(g_fb, FBIO_ACQUIRE, &release);
+
+    /*
+     * To serial, where it does not disturb the screen. `drawn/considered` is
+     * the number that matters: 1.0 means the compositor did exactly the work
+     * the damage asked for, and anything much above it is work thrown away.
+     */
+    if (g_cost.frames > 0) {
+        fprintf(stderr,
+            "wsys: %lu frames, %lu us (%lu us/frame), %lu windows, "
+            "%lu kpx considered, %lu kpx drawn, waste %lux\n",
+            g_cost.frames, g_cost.micros, g_cost.micros / g_cost.frames, g_cost.windows,
+            g_cost.considered / 1000, g_cost.drawn / 1000,
+            g_cost.considered > 0 ? g_cost.drawn / g_cost.considered : 0);
+    }
     return 0;
 }

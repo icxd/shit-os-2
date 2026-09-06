@@ -76,7 +76,18 @@ typedef struct UiTheme {
     int corner_radius;
     int corner_radius_small;
     int padding;
-    int spacing;
+
+    /*
+     * A scale, not a number. Space is what tells a reader which things belong
+     * together, and it can only do that if the distance between a label and
+     * its own control is visibly smaller than the distance to the next group.
+     * One `spacing` used everywhere -- which is what this was -- makes a
+     * screen where everything is equally related to everything else, and that
+     * is most of what "unpolished" means.
+     */
+    int spacing_tight; /* a label and the control it names */
+    int spacing; /* neighbours inside one group */
+    int spacing_section; /* one group and the next */
 
     /* How far a control and a panel sit above what is behind them. */
     int elevation_control;
@@ -145,6 +156,10 @@ void ui_fill_rounded(UiPainter*, UiRect, int radius, unsigned colour);
 void ui_fill_rounded_alpha(UiPainter*, UiRect, int radius, unsigned colour, unsigned alpha);
 void ui_stroke_rect(UiPainter*, UiRect, unsigned colour);
 void ui_stroke_rounded(UiPainter*, UiRect, int radius, unsigned colour);
+
+/* The same at partial coverage. A focus ring wants to read as a halo rather
+ * than as a second border, and the difference is entirely the alpha. */
+void ui_stroke_rounded_alpha(UiPainter*, UiRect, int radius, unsigned colour, unsigned alpha);
 
 /*
  * A soft shadow under a surface, drawn before the surface itself. `elevation`
@@ -234,6 +249,9 @@ int ui_widget_add(UiWidget* parent, UiWidget* child);
  * everything that changes anything calls it, and the window coalesces. */
 void ui_widget_invalidate(UiWidget*);
 
+/* The same, for one part of a widget, in the widget's own coordinates. */
+void ui_widget_invalidate_rect(UiWidget*, UiRect);
+
 /* The deepest visible widget containing the point, in window coordinates. */
 UiWidget* ui_widget_at(UiWidget* root, int x, int y);
 
@@ -314,6 +332,9 @@ UiWidget* ui_window_focused(UiWindow*);
 
 void ui_window_invalidate(UiWindow*);
 
+/* Just this rectangle of it, in window coordinates. */
+void ui_window_damage(UiWindow*, int x, int y, int width, int height);
+
 /* Runs until the window is closed. Returns 0 on a clean exit. */
 int ui_window_run(UiWindow*);
 
@@ -328,6 +349,10 @@ int ui_window_run(UiWindow*);
  * shell has exited.
  */
 typedef int (*UiWindowReady)(int fd, void* user);
+/* One turn of the event loop, for an application that has a loop of its own.
+ * Returns zero once the window has been closed. */
+int ui_window_step(UiWindow*, int timeout_ms);
+
 int ui_window_pump(UiWindow*, int extra, UiWindowReady on_ready, void* user);
 
 /* Asks the loop to stop, from inside a callback. */

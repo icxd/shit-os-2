@@ -43,6 +43,15 @@ struct UiWindow {
     int needs_paint;
     int running;
 
+    /*
+     * What has to be painted again, in window coordinates. One rectangle
+     * rather than a list: two changes in opposite corners then repaint the
+     * space between them, which is worse than tracking both and far simpler
+     * than tracking both. A terminal printing a line damages one row of cells,
+     * which is the case that matters.
+     */
+    int damage_x0, damage_y0, damage_x1, damage_y1;
+
     char pending_title[WSYS_TITLE_MAX];
 };
 
@@ -127,21 +136,37 @@ static void repaint(UiWindow* window)
         if (window->root->klass->layout != NULL)
             window->root->klass->layout(window->root);
         window->needs_layout = 0;
+
+        /* A layout pass can move anything anywhere, so nothing on the surface
+         * can be trusted to still be right. */
+        ui_window_invalidate(window);
     }
 
+    if (window->damage_x0 >= window->damage_x1) {
+        window->needs_paint = 0;
+        return;
+    }
+
+    UiRect const region = { window->damage_x0, window->damage_y0,
+        window->damage_x1 - window->damage_x0, window->damage_y1 - window->damage_y0 };
+
+    /*
+     * Clipped to the damage, so the whole tree can be walked while only the
+     * part that changed is touched. A widget outside it gets an empty clip
+     * from ui_painter_for and returns before drawing anything.
+     */
     UiPainter painter = {
         .pixels = window->pixels,
         .width = window->width,
         .height = window->height,
         .origin_x = 0,
         .origin_y = 0,
-        .clip = { 0, 0, window->width, window->height },
+        .clip = region,
         .font = window->fonts.body,
         .fonts = &window->fonts,
     };
 
-    UiRect const whole = { 0, 0, window->width, window->height };
-    ui_fill_rect(&painter, whole, ui_theme()->background);
+    ui_fill_rect(&painter, region, ui_theme()->background);
 
     paint_widget(window->root, &painter);
 
@@ -149,12 +174,13 @@ static void repaint(UiWindow* window)
     memset(&message, 0, sizeof(message));
     message.type = WSYS_DAMAGE;
     message.window = window->id;
-    message.damage.x = 0;
-    message.damage.y = 0;
-    message.damage.width = window->width;
-    message.damage.height = window->height;
+    message.damage.x = region.x;
+    message.damage.y = region.y;
+    message.damage.width = region.width;
+    message.damage.height = region.height;
     (void)send_message(window, &message);
 
+    window->damage_x0 = window->damage_x1 = 0;
     window->needs_paint = 0;
 }
 
@@ -392,16 +418,106 @@ UiWidget* ui_window_focused(UiWindow* window)
     return window != NULL ? window->focused : NULL;
 }
 
+void ui_window_damage(UiWindow* window, int x, int y, int width, int height)
+{
+    if (window == NULL)
+        return;
+
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + width;
+    int y1 = y + height;
+
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > window->width)
+        x1 = window->width;
+    if (y1 > window->height)
+        y1 = window->height;
+    if (x0 >= x1 || y0 >= y1)
+        return;
+
+    if (window->damage_x0 >= window->damage_x1) {
+        window->damage_x0 = x0;
+        window->damage_y0 = y0;
+        window->damage_x1 = x1;
+        window->damage_y1 = y1;
+    } else {
+        if (x0 < window->damage_x0)
+            window->damage_x0 = x0;
+        if (y0 < window->damage_y0)
+            window->damage_y0 = y0;
+        if (x1 > window->damage_x1)
+            window->damage_x1 = x1;
+        if (y1 > window->damage_y1)
+            window->damage_y1 = y1;
+    }
+
+    window->needs_paint = 1;
+}
+
 void ui_window_invalidate(UiWindow* window)
 {
     if (window != NULL)
-        window->needs_paint = 1;
+        ui_window_damage(window, 0, 0, window->width, window->height);
 }
 
 void ui_window_close(UiWindow* window)
 {
     if (window != NULL)
         window->running = 0;
+}
+
+/*
+ * Drain everything that has arrived before painting once. A mouse dragged
+ * quickly delivers a burst of movement, and repainting per event would spend
+ * the whole frame on positions nobody ever saw.
+ */
+static void drain_messages(UiWindow* window)
+{
+    for (;;) {
+        struct WsysMessage message;
+        ssize_t const got = read(window->to_client, &message, sizeof(message));
+        if (got != (ssize_t)sizeof(message))
+            break;
+
+        switch (message.type) {
+        case WSYS_MOUSE:
+            deliver_mouse(window, message.mouse.x, message.mouse.y, message.mouse.buttons,
+                message.mouse.wheel);
+            break;
+        case WSYS_KEY: deliver_key(window, &message); break;
+        case WSYS_CLOSE_REQUEST: window->running = 0; break;
+        default: break;
+        }
+
+        struct pollfd more = { .fd = window->to_client, .events = POLLIN, .revents = 0 };
+        if (poll(&more, 1, 0) <= 0)
+            break;
+    }
+}
+
+/*
+ * One turn of the loop, for an application that has a loop of its own. Waits
+ * up to `timeout_ms` for something to arrive -- 0 to only handle what is
+ * already there -- handles it, and repaints if anything changed. Returns zero
+ * once the window has been closed.
+ */
+int ui_window_step(UiWindow* window, int timeout_ms)
+{
+    if (window == NULL || !window->running)
+        return 0;
+
+    struct pollfd waiting = { .fd = window->to_client, .events = POLLIN, .revents = 0 };
+    if (poll(&waiting, 1, timeout_ms) > 0 && (waiting.revents & POLLIN) != 0)
+        drain_messages(window);
+
+    if (window->needs_paint || window->needs_layout)
+        repaint(window);
+
+    return window->running;
 }
 
 int ui_window_pump(UiWindow* window, int extra, UiWindowReady on_ready, void* user)
@@ -437,33 +553,8 @@ int ui_window_pump(UiWindow* window, int extra, UiWindowReady on_ready, void* us
                 window->running = 0;
         }
 
-        if ((waiting[0].revents & POLLIN) != 0) {
-            /*
-             * Drain everything that has arrived before painting once. A mouse
-             * dragged quickly delivers a burst of movement, and repainting per
-             * event would spend the whole frame on positions nobody ever saw.
-             */
-            for (;;) {
-                struct WsysMessage message;
-                ssize_t const got = read(window->to_client, &message, sizeof(message));
-                if (got != (ssize_t)sizeof(message))
-                    break;
-
-                switch (message.type) {
-                case WSYS_MOUSE:
-                    deliver_mouse(window, message.mouse.x, message.mouse.y, message.mouse.buttons,
-                        message.mouse.wheel);
-                    break;
-                case WSYS_KEY: deliver_key(window, &message); break;
-                case WSYS_CLOSE_REQUEST: window->running = 0; break;
-                default: break;
-                }
-
-                struct pollfd more = { .fd = window->to_client, .events = POLLIN, .revents = 0 };
-                if (poll(&more, 1, 0) <= 0)
-                    break;
-            }
-        }
+        if ((waiting[0].revents & POLLIN) != 0)
+            drain_messages(window);
 
         if (window->needs_paint || window->needs_layout)
             repaint(window);

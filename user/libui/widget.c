@@ -63,14 +63,43 @@ int ui_widget_add(UiWidget* parent, UiWidget* child)
     return 0;
 }
 
+/* Where a widget sits on the window's surface. Rects are relative to the
+ * parent, so this is the walk up. */
+static void absolute_origin(const UiWidget* widget, int* x, int* y)
+{
+    *x = 0;
+    *y = 0;
+    for (const UiWidget* w = widget; w != NULL; w = w->parent) {
+        *x += w->rect.x;
+        *y += w->rect.y;
+    }
+}
+
 void ui_widget_invalidate(UiWidget* widget)
 {
     if (widget == NULL)
         return;
-    /* No per-widget damage yet: the window coalesces to one rectangle anyway,
-     * and a window is small enough that the difference is not measurable. What
-     * matters is that a widget can say "I changed" without knowing how. */
-    ui_window_invalidate(widget->window);
+
+    int x = 0;
+    int y = 0;
+    absolute_origin(widget, &x, &y);
+    ui_window_damage(widget->window, x, y, widget->rect.width, widget->rect.height);
+}
+
+/*
+ * Part of a widget, in its own coordinates. A terminal that has printed one
+ * line has changed one row of cells out of twenty-four, and repainting the
+ * other twenty-three is most of what a terminal spends its time on.
+ */
+void ui_widget_invalidate_rect(UiWidget* widget, UiRect rect)
+{
+    if (widget == NULL)
+        return;
+
+    int x = 0;
+    int y = 0;
+    absolute_origin(widget, &x, &y);
+    ui_window_damage(widget->window, x + rect.x, y + rect.y, rect.width, rect.height);
 }
 
 void ui_widget_measure(UiWidget* widget, int* width, int* height)
@@ -180,6 +209,17 @@ static void box_layout(UiWidget* widget)
     if (visible > 1)
         wanted += box->spacing * (visible - 1);
 
+    /*
+     * More children than room. A box that just lets them run off the end
+     * produces the worst-looking thing an interface can do -- a button sliced
+     * in half by the window edge -- so the shortfall is taken back from them
+     * in proportion to what they asked for, which is what every layout that
+     * survives a resize does.
+     */
+    int shortfall = wanted - available;
+    if (shortfall < 0)
+        shortfall = 0;
+
     int leftover = available - wanted;
     if (leftover < 0)
         leftover = 0;
@@ -203,6 +243,13 @@ static void box_layout(UiWidget* widget)
 
         int along = box->orientation == UI_HORIZONTAL ? w : h;
         int const across = box->orientation == UI_HORIZONTAL ? inner_height : inner_width;
+
+        if (shortfall > 0 && wanted > 0) {
+            int give = along * shortfall / wanted;
+            if (give > along)
+                give = along;
+            along -= give;
+        }
 
         if (box->orientation == UI_HORIZONTAL ? child->expand_x : child->expand_y) {
             along += share;

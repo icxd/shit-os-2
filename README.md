@@ -30,12 +30,12 @@ It is still not useful. It is now genuinely an operating system.
 | **Filesystems** | VFS over a ustar initrd (ro), tmpfs, devfs |
 | **Graphics** | `/dev/fb0` mapped straight into a process, `/dev/mouse0`, `/dev/kbdraw` with press and release events |
 | **Desktop** | A window server in userland: real windows, titlebars, dragging, stacking, focus, click-to-raise. Clients draw into shared memory, so no pixel is ever sent as a message |
-| **Toolkit** | Our own TrueType rasteriser, and a retained-mode widget library on top of it: boxes that lay out, labels, buttons, checkboxes, text fields, hover and focus, anti-aliased rounded rectangles and shadows |
+| **Toolkit** | Our own TrueType rasteriser, and a retained-mode widget library on top of it: boxes that lay out and shrink, labels, buttons, checkboxes, text fields, hover and focus, anti-aliased rounded rectangles and shadows, damage-driven repaint down to the widget |
 | **Terminal** | Pseudo-terminals, a controlling terminal per session with a real `/dev/tty`, and a VT100 emulator as a widget: colour, cursor addressing, erase, 2000 lines of scrollback. `dash` runs in a window |
 | **Modules** | ELF64 `.ko` loaded at runtime against a versioned ABI; PS/2 keyboard, PS/2 mouse and CMOS clock drivers, written in C |
 | **Userland** | Ring 3, 51 POSIX syscalls, static ELF loading with a correct auxv, `fork`/`execve`/`waitpid`, pipes, signals with masking, `poll`/`select`, the `at` family, job control with process groups and sessions, a TTY with canonical line discipline, pseudo-terminals |
 | **libc** | Our own: stdio, an allocator that is not linear in the heap, a libm checked in ULPs, and a POSIX regex engine |
-| **Programs** | 108 in `/bin`. Ours are `init` `sh` `ps` `free` `lsmod` `stty` `terminal`; the coreutils come from sbase |
+| **Programs** | 109 in `/bin`. Ours are `init` `sh` `ps` `free` `lsmod` `stty` `terminal`; the coreutils come from sbase |
 | **Ports** | **Lua 5.4**, **dash** and **sbase**, all unpatched, built against our libc |
 | **Tests** | 220 assertions in the kernel at every boot, 412 more from ring 3 run by `/etc/rc` before the shell, and five host-side checks that need something the target cannot provide |
 
@@ -248,6 +248,59 @@ The other two are both about *who else is holding this*:
 gallery: feeding an escape sequence in two halves, checking cursor addressing
 is one-based, checking that erasing to end of line stops where the cursor is.
 Those are facts rather than judgements, and a screenshot cannot check them.
+
+## It was twenty-six times slower than it needed to be
+
+The desktop worked and felt terrible, which is a different bug from a desktop
+that does not work and a harder one to be honest about. So the first thing
+built was something that produces a number: `wsysbench` is a real client doing
+the most demanding thing here -- a terminal printing -- and `wsys` reports what
+each frame cost it.
+
+**206 ms a frame.** Under five frames a second. Three causes, each of which
+looked reasonable in the code that contained it:
+
+**The compositor redrew everything and then blitted what changed.** Damage
+tracking existed, and it was applied to the final copy to the framebuffer --
+after the desktop gradient and every window had been drawn in full. Moving the
+mouse one pixel repainted 786,432 of them. The painter already carried a clip
+that the toolkit honoured everywhere; the compositor simply never set it. Now
+it does, windows that do not intersect the damage are skipped entirely, and
+the content copy is bounded by it.
+
+**The shadows were drawn underneath the windows that hid them.** A focused
+window's shadow is fourteen stacked rounded rectangles, and each was filled
+across its whole area -- including the middle, which the opaque window is
+painted over immediately afterwards. That is about five million alpha blends a
+frame, thrown away. `ui_drop_shadow` now cuts the covered rectangle out of
+every layer, which turns a stack of filled shapes into a stack of rings.
+
+**`poll` waited on a timer.** No wait queue spanned arbitrary descriptors, so a
+poll that had to block slept four milliseconds and looked again. A keystroke
+crosses three of those -- into the server, out to the client, back with the
+damage -- before a pixel changes. There is now one queue that every `wake_all`
+wakes, which is deliberately unmissable: a waker somebody forgets to add is a
+poll that never returns, and hooking it at the one place all of them go
+through means there is nothing to forget. Polls *with* a deadline still step on
+the timer, because a thread can only be on one list and being on the poll
+queue means not being on the one that would wake it in time.
+
+The lost-wakeup race that comes with that is closed by a generation counter
+read before the readiness scan and compared under the same lock the wake takes,
+so an event that lands mid-scan is either seen by the scan or stops the sleep.
+
+**7.8 ms a frame**, and the remaining cost is real work: a terminal scrolling
+genuinely does change every row. Painting is now clipped end to end -- a widget
+invalidates its own rectangle, the window repaints and reports only that, and
+the terminal tracks which rows changed -- so a shell printing a line asks to
+repaint one row out of twenty-four. `tools/check-ui.sh` asserts exactly that,
+because it is the kind of thing that quietly regresses.
+
+While the numbers were being chased, the layout got the fix it needed too: a
+box whose children want more room than it has now takes the shortfall back
+from them in proportion, instead of letting the last one run off the edge. The
+window in the screenshot above used to have its buttons sliced in half by the
+bottom of the frame.
 
 ## Building
 

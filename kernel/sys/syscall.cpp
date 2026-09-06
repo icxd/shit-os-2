@@ -25,6 +25,7 @@
 #include <kernel/panic.h>
 #include <kernel/sched/process.h>
 #include <kernel/sched/scheduler.h>
+#include <kernel/sched/waitqueue.h>
 #include <kernel/sys/clock.h>
 #include <kernel/sys/elf_loader.h>
 #include <kernel/sys/syscall.h>
@@ -1180,6 +1181,13 @@ ErrorOr<u64> sys_poll(InterruptFrame&, u64 pointer, u64 count, u64 timeout_ms, u
         = timeout > 0 ? clock_monotonic_ns() + static_cast<u64>(timeout) * 1'000'000 : 0;
 
     for (;;) {
+        /*
+         * Read before the test, not after: a descriptor that becomes ready
+         * while the loop below is looking at the others would otherwise wake
+         * a queue nobody is on yet, and the sleep after it would never end.
+         */
+        u64 const seen = poll_queue().generation();
+
         usize ready = 0;
         for (usize i = 0; i < count; ++i) {
             if (poll_one(*process, entries[i]))
@@ -1198,11 +1206,21 @@ ErrorOr<u64> sys_poll(InterruptFrame&, u64 pointer, u64 count, u64 timeout_ms, u
             return static_cast<u64>(0);
         }
 
-        // No wait queue spans arbitrary descriptors, so this polls on the
-        // timer rather than sleeping on the right one. It is the honest
-        // version of what the interface promises and the obvious thing to
-        // replace once inodes carry their own poll queues.
-        Scheduler::sleep_ms(4);
+        /*
+         * With a deadline to meet, sleep in steps and re-check: a thread can
+         * only be on one list, and being on the poll queue means not being on
+         * the sleeper list that would wake it in time.
+         *
+         * With no deadline -- which is what every interactive loop here passes
+         * -- wait for an actual event instead. That is the difference between
+         * a keystroke appearing in four milliseconds and appearing at once,
+         * three times over, because it crosses three of these on the way to
+         * the screen.
+         */
+        if (timeout > 0)
+            Scheduler::sleep_ms(4);
+        else
+            poll_queue().wait_since(seen);
 
         if (process->has_pending_signals())
             return Error::from_errno(EINTR);
